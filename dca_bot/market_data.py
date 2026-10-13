@@ -154,11 +154,12 @@ class BinanceSpotMarketData:
         # keep the raw exchange filters authoritative when they specify a
         # stricter minimum. This avoids accepting an order when cached or
         # incomplete normalized metadata understates Binance's current floor.
+        max_cost: Decimal | None = None
         notional_filters = [
-            filter_map.get("MIN_NOTIONAL"),
-            filter_map.get("NOTIONAL"),
+            ("MIN_NOTIONAL", filter_map.get("MIN_NOTIONAL")),
+            ("NOTIONAL", filter_map.get("NOTIONAL")),
         ]
-        for notional_filter in notional_filters:
+        for filter_name, notional_filter in notional_filters:
             if not isinstance(notional_filter, dict):
                 continue
             raw_min_notional = notional_filter.get("minNotional")
@@ -177,6 +178,30 @@ class BinanceSpotMarketData:
                     f"{normalized} Binance notional filter is invalid; entry blocked"
                 )
             min_cost = max(min_cost, filter_min_cost)
+
+            # Binance NOTIONAL also declares an upper notional bound. Honor it
+            # so the preflight validates both sides of the exchange filter.
+            if filter_name == "NOTIONAL":
+                raw_max_notional = notional_filter.get("maxNotional")
+                if raw_max_notional is None:
+                    raise ValueError(
+                        f"{normalized} Binance notional filter is invalid; entry blocked"
+                    )
+                try:
+                    filter_max_cost = Decimal(str(raw_max_notional))
+                except (InvalidOperation, TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"{normalized} Binance notional filter is invalid; entry blocked"
+                    ) from exc
+                if (
+                    not filter_max_cost.is_finite()
+                    or filter_max_cost <= 0
+                    or filter_max_cost < filter_min_cost
+                ):
+                    raise ValueError(
+                        f"{normalized} Binance notional filter is invalid; entry blocked"
+                    )
+                max_cost = filter_max_cost if max_cost is None else min(max_cost, filter_max_cost)
 
         def floor_step(value: Decimal, step: Decimal) -> Decimal:
             return (value // step) * step
@@ -220,6 +245,11 @@ class BinanceSpotMarketData:
                 raise ValueError(
                     f"{normalized} {label} quote value after price/quantity rounding "
                     f"({rounded_cost} USDT) is below the market minimum cost {min_cost} USDT"
+                )
+            if max_cost is not None and rounded_cost > max_cost:
+                raise ValueError(
+                    f"{normalized} {label} quote value after price/quantity rounding "
+                    f"({rounded_cost} USDT) exceeds Binance maximum notional {max_cost} USDT"
                 )
 
 
