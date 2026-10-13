@@ -98,11 +98,12 @@ def ensure_authenticated(request: Request) -> None:
 def estimate_profile_capital(config: StrategyConfig, reference_price: float | None) -> tuple[float | None, float]:
     """Estimate profile capital, deferring dynamic fixed-coin sizing to each discovered market.
 
-    Automatic USDT discovery spans assets with different prices, so a single reference
-    price cannot validate a fixed-coin DCA ladder for every candidate. The autonomous
-    scanner recalculates that ladder against each candidate's own closed-candle price.
+    Automatic USDT discovery uses adaptive DCA parameters per candidate. A profile-level
+    estimate must not reject a ladder that the autonomous analyzer can safely shrink to fit
+    the configured per-deal cap. The scanner validates each candidate's complete ladder
+    against its own price before it can open a paper deal.
     """
-    if config.pair_selection_mode == "automatic_usdt" and config.averaging_method == "fixed_coin_amount":
+    if config.pair_selection_mode == "automatic_usdt":
         return None, config.max_capital_per_deal * config.max_active_deals
     required = config.estimated_max_deal_capital(reference_price)
     return required, config.estimated_total_capacity(reference_price)
