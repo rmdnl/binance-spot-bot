@@ -193,13 +193,20 @@ def global_capital_status(session: Session, limit_quote: Decimal) -> dict[str, s
 
     if not limit_quote.is_finite() or limit_quote <= 0:
         raise ValueError("Global capital limit must be a positive finite amount")
-    rows = session.query(PaperDealRecord).filter_by(status="active").all()
+    # Inspect every row, not only rows indexed as active. A stale "closed"
+    # database status paired with an active serialized deal would otherwise be
+    # omitted from reservations and could let another entry exceed the cap.
+    rows = session.query(PaperDealRecord).all()
     deals = []
     for row in rows:
         deal = deserialize_paper_deal(row.state_json)
-        if row.status != deal.status or deal.status != "active":
-            raise ValueError("Persisted active deal state is inconsistent; global capital check failed closed")
-        deals.append(deal)
+        if row.status != deal.status:
+            raise ValueError(
+                f"Persisted paper deal status mismatch for {row.id}; "
+                "global capital check failed closed"
+            )
+        if deal.status == "active":
+            deals.append(deal)
     reserved = reserved_capital_quote(deals)
     remaining = limit_quote - reserved
     return {
