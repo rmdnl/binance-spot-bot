@@ -89,6 +89,8 @@ def test_discovery_returns_only_liquid_fresh_active_usdt_spot_pairs_ranked_by_vo
         "BTC/USDT:USDT": {"spot": False, "active": True, "base": "BTC", "quote": "USDT"},
         "BNB/USDT": {"spot": True, "active": False, "base": "BNB", "quote": "USDT"},
         "ETHUP/USDT": {"spot": True, "active": True, "base": "ETHUP", "quote": "USDT"},
+        "ETH3L/USDT": {"spot": True, "active": True, "base": "ETH3L", "quote": "USDT"},
+        "GROUP/USDT": {"spot": True, "active": True, "base": "GROUP", "quote": "USDT"},
     }
     tickers = {
         "BTC/USDT": {"last": 100, "bid": 99.99, "ask": 100.01, "quoteVolume": 20_000_000, "timestamp": now_ms},
@@ -98,6 +100,8 @@ def test_discovery_returns_only_liquid_fresh_active_usdt_spot_pairs_ranked_by_vo
         "BTC/USDT:USDT": {"last": 100, "bid": 99.99, "ask": 100.01, "quoteVolume": 99_000_000, "timestamp": now_ms},
         "BNB/USDT": {"last": 100, "bid": 99.99, "ask": 100.01, "quoteVolume": 99_000_000, "timestamp": now_ms},
         "ETHUP/USDT": {"last": 1, "bid": 0.99, "ask": 1.01, "quoteVolume": 99_000_000, "timestamp": now_ms},
+        "ETH3L/USDT": {"last": 1, "bid": 0.99, "ask": 1.01, "quoteVolume": 99_000_000, "timestamp": now_ms},
+        "GROUP/USDT": {"last": 10, "bid": 9.99, "ask": 10.01, "quoteVolume": 8_000_000, "timestamp": now_ms},
     }
 
     class DiscoveryExchange(FakeExchange):
@@ -108,7 +112,7 @@ def test_discovery_returns_only_liquid_fresh_active_usdt_spot_pairs_ranked_by_vo
     result = BinanceSpotMarketData(exchange).discover_usdt_symbols(
         min_quote_volume_24h=5_000_000, max_spread_pct=0.25, limit=10
     )
-    assert result == ["BTC/USDT", "ETH/USDT"]
+    assert result == ["BTC/USDT", "ETH/USDT", "GROUP/USDT"]
 
 
 def test_discovery_rejects_stale_or_missing_ticker_data():
