@@ -245,8 +245,16 @@ def paper_deals(request: Request, db: Session = Depends(get_db)):
     for row in rows:
         try:
             deal = deserialize_paper_deal(row.state_json)
-        except (ValueError, KeyError, TypeError):
-            continue
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Persisted paper deal state is unreadable; dashboard data is withheld for safety",
+            ) from exc
+        if row.status != deal.status:
+            raise HTTPException(
+                status_code=503,
+                detail="Persisted paper deal status is inconsistent; dashboard data is withheld for safety",
+            )
         snapshot = deal.snapshot()
         if deal.status == "active":
             snapshot["unrealized_pnl_quote"] = str(
