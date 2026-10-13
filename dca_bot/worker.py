@@ -31,6 +31,11 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
         rows = session.query(PaperDealRecord).filter_by(status="active").all()
         if not rows:
             return {"updated": updated, "failures": failures}
+        # SQLite's legacy transaction mode may not begin a physical transaction
+        # for SELECTs. Explicit BEGIN ensures released savepoints remain covered
+        # by the outer transaction and can still be rolled back if final commit fails.
+        if session.get_bind().dialect.name == "sqlite":
+            session.connection().exec_driver_sql("BEGIN")
         exchange = BinanceSpotMarketData()
         prices = {}
         for row in rows:
