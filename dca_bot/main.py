@@ -404,6 +404,7 @@ def save_strategy(
     reinvest_profit: bool = Form(False),
     max_deal_duration_hours: int = Form(0),
     start_condition: str = Form("manual"),
+    auto_paper_enabled: bool = Form(False),
     entry_filter: str = Form("manual"),
     timeframe: str = Form("1h"),
     ema_fast: int = Form(50),
@@ -430,6 +431,8 @@ def save_strategy(
     ensure_authenticated(request)
     check_csrf(request, csrf)
     try:
+        if auto_paper_enabled and start_condition != "autonomous":
+            raise ValueError("Autonomous paper mode requires the Autonomous start condition.")
         config = StrategyConfig(
             name=name,
             symbols=[item.strip() for item in symbols.split(",") if item.strip()],
@@ -518,8 +521,8 @@ def save_strategy(
 
     record.name = config.name
     record.config_json = config.model_dump_json()
-    # Saving a strategy never starts execution; execution controls are not implemented yet.
-    record.enabled = False
+    # This flag enables only the paper-mode autonomous worker; exchange execution remains disabled.
+    record.enabled = auto_paper_enabled
     db.add(AuditEvent(
         event_type="strategy_saved",
         detail=json.dumps({
