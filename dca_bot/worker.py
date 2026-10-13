@@ -34,6 +34,7 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
         exchange = BinanceSpotMarketData()
         prices = {}
         for row in rows:
+            savepoint = session.begin_nested()
             try:
                 deal = deserialize_paper_deal(row.state_json)
                 if deal.symbol not in prices:
@@ -90,7 +91,10 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
                                 event_type="paper_reinvestment_blocked",
                                 detail=json.dumps({"deal_id": deal.id, "reason": "updated strategy failed validation"}),
                             ))
+                savepoint.commit()
             except Exception as exc:
+                if savepoint.is_active:
+                    savepoint.rollback()
                 logger.warning("Paper deal poll failed for %s: %s", row.id, exc)
                 failures.append({
                     "deal_id": row.id,
