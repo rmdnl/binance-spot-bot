@@ -2,7 +2,9 @@ from decimal import Decimal as D
 
 import pytest
 
-from dca_bot.paper_engine import start_paper_deal, update_paper_deal
+from dca_bot.paper_engine import (
+    deserialize_paper_deal, serialize_paper_deal, start_paper_deal, update_paper_deal,
+)
 from dca_bot.strategy import StrategyConfig
 
 
@@ -99,3 +101,17 @@ def test_closed_paper_deal_is_idempotent():
 def test_paper_deal_rejects_pair_not_in_strategy():
     with pytest.raises(ValueError, match="not included"):
         start_paper_deal(config(), "ETH/USDT", D("100"))
+
+
+
+def test_paper_deal_state_round_trips_for_restart_recovery():
+    deal = start_paper_deal(config(), "BTC/USDT", D("100"))
+    update_paper_deal(deal, D("99"))
+    restored = deserialize_paper_deal(serialize_paper_deal(deal))
+    assert restored.id == deal.id
+    assert restored.status == deal.status
+    assert restored.quote_spent == deal.quote_spent
+    assert restored.base_quantity == deal.base_quantity
+    assert restored.safety_orders_filled == deal.safety_orders_filled
+    assert restored.average_entry_price == deal.average_entry_price
+    assert [event.event_type for event in restored.events] == [event.event_type for event in deal.events]
