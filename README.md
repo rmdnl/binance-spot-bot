@@ -4,6 +4,12 @@ A self-hosted Binance **Spot-only** DCA trading dashboard inspired by the workfl
 
 > **Safety status:** initial development foundation. Paper trading is the only intended default. Do not use with real funds until exchange execution, reconciliation, authentication, and risk controls have been implemented and independently tested.
 
+## Current implementation status
+
+The dashboard now has an authenticated read-only Binance Spot ticker endpoint and a DCA ladder/capital preview for fixed quote or fixed coin sizing. Strategy configuration includes initial controls for DCA mode, take-profit basis, stop-loss basis, breakeven, reinvestment and maximum deal duration. These settings are configuration scaffolding, not a running trading engine. No order placement is available yet.
+
+See [FEATURE_PARITY.md](FEATURE_PARITY.md) for the target feature matrix and delivery gates, and [DEPLOYMENT.md](DEPLOYMENT.md) for the recommended Cloudflare Tunnel + Access setup.
+
 ## Goals
 
 - Responsive dark trading dashboard served on port **8082**.
