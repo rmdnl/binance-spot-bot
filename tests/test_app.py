@@ -137,6 +137,7 @@ def test_global_capital_status_reports_account_wide_budget(monkeypatch):
     from decimal import Decimal
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
     from dca_bot.db import Base
     from dca_bot.models import PaperDealRecord, StrategyRecord
     from dca_bot.paper_engine import start_paper_deal, serialize_paper_deal
@@ -174,7 +175,11 @@ def test_paper_deals_endpoint_withholds_mismatched_persisted_symbol(monkeypatch)
     from dca_bot.models import PaperDealRecord, StrategyRecord
     from dca_bot.paper_engine import serialize_paper_deal, start_paper_deal
 
-    engine = create_engine("sqlite://")
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, expire_on_commit=False)
     setup = Session()
