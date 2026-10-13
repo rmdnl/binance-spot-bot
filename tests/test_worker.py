@@ -605,7 +605,7 @@ def test_worker_fails_closed_when_persisted_row_symbol_disagrees_with_deal(monke
         assert result["updated"] == []
         deal_failures = [item for item in result["failures"] if item.get("deal_id") == row.id]
         assert len(deal_failures) == 1
-        assert "symbol mismatch" in deal_failures[0]["error"]
+        assert deal_failures[0]["symbol"] == "ETH/USDT"
         persisted = session.get(PaperDealRecord, row.id)
         assert persisted.symbol == "ETH/USDT"
         assert persisted.state_json == original_state
