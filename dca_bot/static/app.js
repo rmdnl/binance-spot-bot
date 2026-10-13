@@ -152,6 +152,104 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  const csrfToken = () => document.querySelector('#strategy-form input[name="csrf_token"]')?.value || '';
+  const paperList = document.getElementById('paper-deals-list');
+  const paperCell = (tag, text, className) => {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  };
+  const refreshPaperDeals = async (tick = true) => {
+    if (!paperList) return;
+    paperList.textContent = 'Loading paper deals…';
+    try {
+      if (tick) {
+        const tickResponse = await fetch('/api/paper/deals/tick', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json'},
+          body: new URLSearchParams({csrf_token: csrfToken()})
+        });
+        if (!tickResponse.ok) {
+          const err = await tickResponse.json();
+          throw new Error(err.detail || 'Could not refresh Spot prices');
+        }
+      }
+      const response = await fetch('/api/paper/deals', {headers: {'Accept': 'application/json'}});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Could not load paper deals');
+      paperList.replaceChildren();
+      const activeCount = data.deals.filter(deal => deal.status === 'active').length;
+      const countChip = document.querySelector('#deals .section-heading .count-chip');
+      if (countChip) countChip.textContent = `${activeCount} active`;
+      if (!data.deals.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.append(paperCell('span', '◷'), paperCell('b', 'No paper deals'), paperCell('p', 'Start a paper deal from a saved strategy profile.'));
+        paperList.append(empty);
+        return;
+      }
+      data.deals.forEach(deal => {
+        const card = document.createElement('article');
+        card.className = 'paper-deal-card';
+        const head = document.createElement('div');
+        head.className = 'paper-deal-head';
+        head.append(paperCell('b', deal.symbol), paperCell('span', deal.status.toUpperCase(), `state-chip ${deal.status === 'active' ? 'paper-active' : ''}`));
+        card.append(head);
+        const stats = document.createElement('div');
+        stats.className = 'paper-deal-stats';
+        [
+          ['Average entry', Number(deal.average_entry_price).toPrecision(8)],
+          ['Last price', Number(deal.last_price).toPrecision(8)],
+          ['Capital used', `${Number(deal.quote_spent).toFixed(4)} USDT`],
+          ['Unrealized PnL', `${Number(deal.unrealized_pnl_quote).toFixed(4)} USDT`],
+          ['Safety orders', `${deal.safety_orders_filled}/${deal.safety_orders_total}`],
+          ['Realized PnL', `${Number(deal.realized_pnl_quote).toFixed(4)} USDT`]
+        ].forEach(([label, value]) => {
+          const item = document.createElement('div');
+          item.append(paperCell('span', label), paperCell('b', value));
+          stats.append(item);
+        });
+        card.append(stats);
+        if (deal.close_reason) card.append(paperCell('p', `Closed: ${deal.close_reason}`, 'muted tiny'));
+        paperList.append(card);
+      });
+    } catch (error) {
+      paperList.textContent = error.message || 'Could not refresh paper deals.';
+    }
+  };
+
+  document.querySelectorAll('[data-start-paper]').forEach(button => button.addEventListener('click', async () => {
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = 'Starting…';
+    try {
+      const response = await fetch('/api/paper/deals/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json'},
+        body: new URLSearchParams({
+          csrf_token: csrfToken(),
+          strategy_id: button.dataset.startPaper,
+          symbol: button.dataset.symbol
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Could not start paper deal');
+      activateTab('basic');
+      document.getElementById('deals').scrollIntoView({behavior:'smooth', block:'start'});
+      await refreshPaperDeals(false);
+    } catch (error) {
+      validation.className = 'validation error';
+      validation.textContent = error.message || 'Could not start paper deal.';
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }));
+
+  document.getElementById('refresh-paper-deals')?.addEventListener('click', () => refreshPaperDeals(true));
+  refreshPaperDeals(false);
+
   document.querySelectorAll('[data-edit]').forEach(button => button.addEventListener('click', () => {
     let item;
     try { item = JSON.parse(button.getAttribute('data-edit')); } catch { return; }
