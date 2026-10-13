@@ -18,3 +18,63 @@ def test_login_page_does_not_expose_dashboard():
     response = TestClient(app).get('/login')
     assert response.status_code == 200
     assert 'Dashboard password' in response.text
+
+
+def test_strategy_analysis_uses_only_fresh_closed_candles(monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    from dca_bot import main
+
+    monkeypatch.setattr(main, "ensure_authenticated", lambda request: None)
+    now_ms = int(time.time() * 1000)
+    candles = [
+        [now_ms - (300 - index) * 60_000, 100, 101, 99, 100, 10]
+        for index in range(300)
+    ]
+    seen = {}
+
+    class FakeMarketData:
+        normalize_symbol = staticmethod(main.BinanceSpotMarketData.normalize_symbol)
+
+        def candles(self, symbol, timeframe, limit):
+            return candles
+
+    def fake_analyze(symbol, timeframe, observed_candles, config):
+        seen["candles"] = observed_candles
+        return SimpleNamespace(to_dict=lambda: {"action": "wait", "execution": "disabled"})
+
+    monkeypatch.setattr(main, "BinanceSpotMarketData", FakeMarketData)
+    monkeypatch.setattr(main, "analyze_market", fake_analyze)
+
+    response = TestClient(app).get("/api/strategy/analyze?symbol=BTCUSDT&timeframe=1h")
+
+    assert response.status_code == 200
+    assert len(seen["candles"]) == len(candles) - 1
+    assert seen["candles"][-1] == candles[-2]
+    assert response.json()["execution"] == "disabled"
+
+
+def test_strategy_analysis_rejects_stale_candles(monkeypatch):
+    import time
+
+    from dca_bot import main
+
+    monkeypatch.setattr(main, "ensure_authenticated", lambda request: None)
+    old_start_ms = int((time.time() - 8 * 24 * 60 * 60) * 1000)
+    candles = [
+        [old_start_ms + index * 60_000, 100, 101, 99, 100, 10]
+        for index in range(300)
+    ]
+
+    class FakeMarketData:
+        normalize_symbol = staticmethod(main.BinanceSpotMarketData.normalize_symbol)
+
+        def candles(self, symbol, timeframe, limit):
+            return candles
+
+    monkeypatch.setattr(main, "BinanceSpotMarketData", FakeMarketData)
+    response = TestClient(app).get("/api/strategy/analyze?symbol=BTCUSDT&timeframe=1h")
+
+    assert response.status_code == 422
+    assert "stale" in response.json()["detail"]
