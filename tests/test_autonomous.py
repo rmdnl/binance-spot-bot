@@ -14,8 +14,9 @@ def config(**overrides):
         "max_safety_orders": 4,
         "base_order_quote": 10,
         "safety_order_quote": 10,
-        "max_capital_per_deal": 200,
-        "max_total_allocation": 600,
+        "max_capital_per_deal": 100,
+        "max_total_allocation": 120,
+        "max_active_deals": 1,
     }
     values.update(overrides)
     return StrategyConfig(**values)
@@ -122,7 +123,7 @@ def test_enabled_autonomous_profile_scans_closed_candle_without_real_orders(monk
     # second scan reports the existing deal without evaluating/logging again.
     assert second["started"] == []
     assert second["failures"] == []
-    assert second["waited"][0]["reason"] == "pair already has an active deal"
+    assert second["waited"][0]["reason"] == "active deal limit"
     events = session.query(AuditEvent).filter_by(event_type="autonomous_decision").all()
     assert len(events) == 1
     detail = json.loads(events[0].detail)
@@ -155,9 +156,6 @@ def test_autonomous_candidate_opens_only_a_simulated_paper_deal(monkeypatch):
     class FakeMarketData:
         def candles(self, symbol, timeframe, limit=500):
             return candles[-limit:]
-
-        def validate_minimum_order_sizes(self, symbol, config, price):
-            return None
 
     monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
     result = worker.scan_autonomous_strategies(session)
