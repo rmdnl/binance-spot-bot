@@ -568,3 +568,20 @@ def test_global_capital_status_fails_closed_on_persisted_status_mismatch():
     finally:
         session.close()
         engine.dispose()
+
+
+def test_global_capital_status_fails_closed_when_closed_row_contains_active_deal():
+    from dca_bot.risk import global_capital_status
+
+    engine, session = _session()
+    try:
+        _, row, deal = _persist_active_deal(session)
+        # Reverse mismatch: indexed DB row says closed, serialized state says active.
+        row.status = "closed"
+        session.commit()
+
+        with pytest.raises(ValueError, match="Persisted paper deal status mismatch"):
+            global_capital_status(session, D("120"))
+    finally:
+        session.close()
+        engine.dispose()
