@@ -16,6 +16,7 @@ from .models import AuditEvent, PaperDealRecord, StrategyRecord
 from .strategy import StrategyConfig
 from .paper_engine import deserialize_paper_deal, serialize_paper_deal, start_paper_deal, update_paper_deal
 from .risk import reserved_capital_quote, strategy_risk_status
+from .entry_guard import serialized_entry
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
             session.close()
 
 
+@serialized_entry
 def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
     """Evaluate enabled autonomous profiles and open paper deals only on a fresh closed candle."""
     owns_session = db is None
