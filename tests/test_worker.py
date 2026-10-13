@@ -856,3 +856,67 @@ def test_autonomous_history_bootstraps_once_then_reads_compact_checkpoints(monke
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_autonomous_history_fails_closed_on_corrupt_checkpoint():
+    engine, session = _session()
+    try:
+        config = _config()
+        strategy = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=False,
+        )
+        session.add(strategy)
+        session.flush()
+        session.add_all([
+            models.AutonomousHistoryState(id=1, initialized=True),
+            models.AutonomousScanCheckpoint(
+                strategy_id=strategy.id,
+                symbol="BTC/USDT",
+                last_decision_json="{not-valid-json",
+                last_entry_epoch=1234.5,
+            ),
+        ])
+        session.commit()
+
+        with pytest.raises(ValueError, match="Corrupt autonomous scanner decision checkpoint"):
+            worker._load_autonomous_history(session)
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_autonomous_history_fails_closed_on_checkpoint_identity_mismatch():
+    engine, session = _session()
+    try:
+        config = _config()
+        strategy = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=False,
+        )
+        session.add(strategy)
+        session.flush()
+        session.add_all([
+            models.AutonomousHistoryState(id=1, initialized=True),
+            models.AutonomousScanCheckpoint(
+                strategy_id=strategy.id,
+                symbol="BTC/USDT",
+                last_decision_json=__import__("json").dumps({
+                    "strategy_id": strategy.id,
+                    "symbol": "ETH/USDT",
+                    "candle_timestamp_ms": 123456789,
+                    "action": "wait",
+                }),
+                last_entry_epoch=1234.5,
+            ),
+        ])
+        session.commit()
+
+        with pytest.raises(ValueError, match="checkpoint identity mismatch"):
+            worker._load_autonomous_history(session)
+    finally:
+        session.close()
+        engine.dispose()
