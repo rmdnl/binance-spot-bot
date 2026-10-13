@@ -110,7 +110,8 @@ class StrategyConfig(BaseModel):
             return float(summary.total_quote_required)
         total = self.base_order_quote
         for index in range(self.max_safety_orders):
-            total += self.safety_order_quote * (self.safety_order_volume_scale ** index)
+            exponent = index + 1 if self.dca_mode == "order_averaging" else index
+            total += self.safety_order_quote * (self.safety_order_volume_scale ** exponent)
         return round(total, 8)
 
     def estimated_total_capacity(self, reference_price: float | None = None) -> float:

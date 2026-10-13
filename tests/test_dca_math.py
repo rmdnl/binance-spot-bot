@@ -57,3 +57,20 @@ def test_rejects_invalid_order_count():
             base_price=D("100"), base_order_quote=D("10"), safety_order_count=31,
             safety_order_quote=D("10"), initial_deviation_pct=D("1"),
         )
+
+
+
+def test_order_averaging_applies_volume_multiplier_to_first_safety_order():
+    position = build_dca_summary(
+        base_price=D("100"), base_order_quote=D("10"), safety_order_quote=D("10"),
+        safety_order_count=2, initial_deviation_pct=D("1"), deviation_scale=D("1"),
+        safety_volume_scale=D("1.5"), dca_mode="position_averaging",
+    )
+    order = build_dca_summary(
+        base_price=D("100"), base_order_quote=D("10"), safety_order_quote=D("10"),
+        safety_order_count=2, initial_deviation_pct=D("1"), deviation_scale=D("1"),
+        safety_volume_scale=D("1.5"), dca_mode="order_averaging",
+    )
+    assert [x.quote_amount for x in position.safety_orders] == [D("10"), D("15")]
+    assert [x.quote_amount for x in order.safety_orders] == [D("15"), D("22.5")]
+    assert order.total_quote_required > position.total_quote_required

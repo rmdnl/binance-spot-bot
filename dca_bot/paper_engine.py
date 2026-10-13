@@ -112,6 +112,7 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
             initial_deviation_pct=D(str(config.initial_deviation_pct)),
             deviation_scale=D(str(config.deviation_scale)),
             safety_volume_scale=D(str(config.safety_order_volume_scale)),
+            dca_mode=config.dca_mode,
         )
     if summary.total_quote_required > D(str(config.max_capital_per_deal)):
         raise ValueError("Estimated DCA capital exceeds max capital per deal")
