@@ -51,6 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return cell;
   };
   const renderLadder = data => {
+    document.getElementById('estimate').textContent = `${Number(data.total_quote_required).toLocaleString(undefined, {maximumFractionDigits: 4})} USDT`;
     previewNode.replaceChildren();
     const title = document.createElement('div');
     title.className = 'ladder-title';
@@ -105,7 +106,9 @@ document.addEventListener('DOMContentLoaded', () => {
       safety_order_count: String(Math.floor(num('max_safety_orders', 4))),
       initial_deviation_pct: String(num('initial_deviation_pct', 1)),
       deviation_scale: String(num('deviation_scale', 1.5)),
-      safety_volume_scale: String(num('safety_order_volume_scale', 1.5))
+      safety_volume_scale: String(num('safety_order_volume_scale', 1.5)),
+      averaging_method: field('averaging_method')?.value || 'fixed_order_value',
+      safety_order_base_quantity: String(num('safety_order_base_quantity', 0.001))
     });
     previewNode.textContent = 'Calculating ladder…';
     try {
@@ -146,7 +149,9 @@ document.addEventListener('DOMContentLoaded', () => {
     setField('name', config.name || item.name);
     setField('symbols', (config.symbols || item.symbols || []).join(', '));
     [
-      'base_order_quote','safety_order_quote','max_safety_orders','take_profit_pct',
+      'base_order_quote','safety_order_quote','max_safety_orders','take_profit_pct','take_profit_basis',
+      'dca_mode','averaging_method','safety_order_base_quantity','start_condition','stop_loss_basis',
+      'breakeven_activation_pct','breakeven_offset_pct','max_deal_duration_hours',
       'initial_deviation_pct','max_active_deals','order_size_mode','base_order_balance_pct',
       'safety_order_volume_scale','deviation_scale','trailing_activation_pct',
       'trailing_callback_pct','stop_loss_pct','entry_filter','timeframe','ema_fast',
@@ -155,9 +160,10 @@ document.addEventListener('DOMContentLoaded', () => {
       'daily_loss_limit_quote','max_equity_drawdown_pct','min_net_profit_pct',
       'fee_rate_pct_per_side','slippage_pct_per_side','retry_limit','reconciliation_seconds','order_type'
     ].forEach(name => setField(name, config[name]));
-    ['trailing_take_profit_enabled','stop_loss_enabled'].forEach(name => setField(name, config[name]));
+    ['trailing_take_profit_enabled','stop_loss_enabled','move_stop_to_breakeven_enabled','reinvest_profit'].forEach(name => setField(name, config[name]));
     activateTab('basic');
     recalc();
+    refreshLadder();
     document.getElementById('strategy-editor').scrollIntoView({behavior:'smooth', block:'start'});
   }));
 
