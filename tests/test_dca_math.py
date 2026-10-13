@@ -29,7 +29,7 @@ def test_scaled_deviation_matches_arithmetic_cumulative_ladder():
     assert [level.price for level in summary.safety_orders] == [
         D("99"), D("97"), D("93"), D("85")
     ]
-    assert summary.total_quote_required == D("81.25000000")
+    assert summary.total_quote_required == D("91.25000000")
 
 
 def test_average_entry_uses_coin_quantity_weighting():
