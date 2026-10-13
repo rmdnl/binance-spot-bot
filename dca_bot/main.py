@@ -281,6 +281,11 @@ def paper_deals(request: Request, db: Session = Depends(get_db)):
                 status_code=503,
                 detail="Persisted paper deal state is unreadable; dashboard data is withheld for safety",
             ) from exc
+        if row.id != deal.id:
+            raise HTTPException(
+                status_code=503,
+                detail="Persisted paper deal identity is inconsistent; dashboard data is withheld for safety",
+            )
         if row.status != deal.status:
             raise HTTPException(
                 status_code=503,
