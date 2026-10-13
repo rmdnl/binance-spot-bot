@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     binance_testnet: bool = True
     session_cookie_secure: bool = False
     session_max_age_seconds: int = Field(default=3600, ge=300, le=86400)
+    paper_poll_interval_seconds: int = Field(default=10, ge=3, le=300)
 
     def assert_safe(self) -> None:
         if self.app_env.lower() == 'production':

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,12 +16,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .auth import is_authenticated, verify_password
 from .config import get_settings
-from .db import get_db, init_db
+from .db import SessionLocal, get_db, init_db
 from .models import AuditEvent, PaperDealRecord, StrategyRecord
 from .strategy import StrategyConfig
 from .dca_math import build_dca_summary
 from .market_data import BinanceSpotMarketData
 from decimal import Decimal as D
+from .worker import run_paper_worker, tick_active_paper_deals
 from .paper_engine import (
     deserialize_paper_deal,
     serialize_paper_deal,
@@ -35,7 +38,19 @@ settings = get_settings()
 async def lifespan(_: FastAPI):
     settings.assert_safe()
     init_db()
-    yield
+    stop_event = asyncio.Event()
+    worker_task = None
+    if settings.trading_mode.lower() == "paper":
+        worker_task = asyncio.create_task(
+            run_paper_worker(stop_event, settings.paper_poll_interval_seconds),
+            name="dca-paper-worker",
+        )
+    try:
+        yield
+    finally:
+        if worker_task is not None:
+            stop_event.set()
+            await worker_task
 
 
 app = FastAPI(
@@ -262,29 +277,8 @@ def paper_deal_tick(
 ):
     ensure_authenticated(request)
     check_csrf(request, csrf)
-    rows = db.query(PaperDealRecord).filter_by(status="active").all()
-    exchange = BinanceSpotMarketData()
-    tickers = {}
-    changed = []
-    failures = []
-    for row in rows:
-        try:
-            deal = deserialize_paper_deal(row.state_json)
-            if deal.symbol not in tickers:
-                tickers[deal.symbol] = exchange.ticker(deal.symbol).last
-            events = update_paper_deal(deal, tickers[deal.symbol])
-            row.status = deal.status
-            row.state_json = serialize_paper_deal(deal)
-            changed.append({"deal": deal.snapshot(), "events": [event.event_type for event in events]})
-            if events:
-                db.add(AuditEvent(
-                    event_type="paper_deal_updated",
-                    detail=json.dumps({"deal_id": deal.id, "symbol": deal.symbol, "events": [event.event_type for event in events], "status": deal.status}),
-                ))
-        except Exception:
-            failures.append({"deal_id": row.id, "symbol": row.symbol, "error": "Market update or state processing failed"})
-    db.commit()
-    return {"updated": changed, "failures": failures, "execution": "paper", "orders_sent_to_exchange": False}
+    result = tick_active_paper_deals(db)
+    return {**result, "execution": "paper", "orders_sent_to_exchange": False}
 
 
 @app.get("/login", response_class=HTMLResponse)

@@ -55,7 +55,7 @@ cd /opt/dca-bot
 .venv/bin/uvicorn dca_bot.main:app --host 127.0.0.1 --port 8082
 ```
 
-Open `http://127.0.0.1:8082/login` from the VPS or through an SSH tunnel. The initial version saves and validates strategy profiles, but does not start deals or submit exchange orders.
+Open `http://127.0.0.1:8082/login` from the VPS or through an SSH tunnel. The current build can start simulated paper deals and monitor their DCA ladder, average entry, take profit, trailing take profit and stop loss using public Spot prices. It does not submit exchange orders.
 
 ## systemd
 
@@ -82,3 +82,8 @@ Cloudflare Access is an outer access gate, not a replacement for application aut
 Official guides: [Create a Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/) and [Publish a self-hosted application with Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/).
 
 **Trading status:** the current build provides a public market ticker endpoint and a deterministic DCA ladder preview for authenticated users. It still does not place paper or live orders. Keep order execution disabled.
+
+
+## Paper worker operation
+
+In paper mode, the app starts a background worker that checks active simulated deals every `PAPER_POLL_INTERVAL_SECONDS` (default 10 seconds). The worker uses public market prices only and never sends orders to Binance. Keep a **single Uvicorn worker process** for this build so multiple worker processes do not poll and update the same paper state concurrently. The worker runs only when `TRADING_MODE=paper`; no live execution worker is implemented.
