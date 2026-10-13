@@ -254,3 +254,56 @@ def test_manual_paper_entry_persistence_failure_rolls_back_and_fails_closed(monk
     assert "inspect persisted deal state before retrying" in error.value.detail
     assert session.rolled_back is True
     assert len(session.added) == 2
+
+
+def test_paper_deals_endpoint_withholds_persisted_id_mismatch(monkeypatch):
+    from decimal import Decimal
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from dca_bot.db import Base, get_db
+    from dca_bot.models import PaperDealRecord, StrategyRecord
+    from dca_bot.paper_engine import serialize_paper_deal, start_paper_deal
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, expire_on_commit=False)
+    setup = Session()
+    try:
+        config = StrategyConfig(max_capital_per_deal=100, max_total_allocation=300)
+        strategy = StrategyRecord(name=config.name, config_json=config.model_dump_json(), enabled=False)
+        setup.add(strategy)
+        setup.flush()
+        deal = start_paper_deal(config, "BTC/USDT", Decimal("100"))
+        row = PaperDealRecord(
+            id="persisted-row-id-mismatch",
+            strategy_id=strategy.id,
+            symbol=deal.symbol,
+            status=deal.status,
+            state_json=serialize_paper_deal(deal),
+        )
+        setup.add(row)
+        setup.commit()
+    finally:
+        setup.close()
+
+    def override_db():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(main, "ensure_authenticated", lambda request: None)
+    try:
+        response = TestClient(app).get("/api/paper/deals")
+        assert response.status_code == 503
+        assert "identity is inconsistent" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
