@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+import json
 from typing import Literal
 from uuid import uuid4
 
@@ -241,3 +242,95 @@ def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[Pap
         return emitted
 
     return emitted
+
+
+
+def serialize_paper_deal(deal: PaperDeal) -> str:
+    """Serialize all state required to resume a paper deal after process restart."""
+    data = {
+        "id": deal.id,
+        "strategy_name": deal.strategy_name,
+        "symbol": deal.symbol,
+        "status": deal.status,
+        "config": deal.config.model_dump(),
+        "base_price": str(deal.base_price),
+        "last_price": str(deal.last_price),
+        "quote_spent": str(deal.quote_spent),
+        "base_quantity": str(deal.base_quantity),
+        "entry_fees_quote": str(deal.entry_fees_quote),
+        "safety_levels": [
+            {
+                "index": level.index,
+                "deviation_pct": str(level.deviation_pct),
+                "price": str(level.price),
+                "quote_amount": str(level.quote_amount),
+                "base_quantity": str(level.base_quantity),
+            }
+            for level in deal.safety_levels
+        ],
+        "safety_orders_filled": deal.safety_orders_filled,
+        "highest_price": str(deal.highest_price),
+        "trailing_active": deal.trailing_active,
+        "breakeven_active": deal.breakeven_active,
+        "exit_price": str(deal.exit_price) if deal.exit_price is not None else None,
+        "realized_pnl_quote": str(deal.realized_pnl_quote),
+        "close_reason": deal.close_reason,
+        "events": [
+            {
+                "event_type": event.event_type,
+                "detail": event.detail,
+                "price": str(event.price),
+                "quote_amount": str(event.quote_amount),
+                "base_quantity": str(event.base_quantity),
+            }
+            for event in deal.events
+        ],
+    }
+    return json.dumps(data, separators=(",", ":"), sort_keys=True)
+
+
+def deserialize_paper_deal(payload: str) -> PaperDeal:
+    """Restore a persisted paper deal without losing Decimal precision."""
+    data = json.loads(payload)
+    config = StrategyConfig.model_validate(data["config"])
+    levels = tuple(
+        SafetyOrderLevel(
+            index=int(level["index"]),
+            deviation_pct=D(level["deviation_pct"]),
+            price=D(level["price"]),
+            quote_amount=D(level["quote_amount"]),
+            base_quantity=D(level["base_quantity"]),
+        )
+        for level in data["safety_levels"]
+    )
+    deal = PaperDeal(
+        id=str(data["id"]),
+        strategy_name=str(data["strategy_name"]),
+        symbol=str(data["symbol"]),
+        status=data["status"],
+        config=config,
+        base_price=D(data["base_price"]),
+        last_price=D(data["last_price"]),
+        quote_spent=D(data["quote_spent"]),
+        base_quantity=D(data["base_quantity"]),
+        entry_fees_quote=D(data["entry_fees_quote"]),
+        safety_levels=levels,
+        safety_orders_filled=int(data["safety_orders_filled"]),
+        highest_price=D(data["highest_price"]),
+        trailing_active=bool(data["trailing_active"]),
+        breakeven_active=bool(data["breakeven_active"]),
+        exit_price=D(data["exit_price"]) if data["exit_price"] is not None else None,
+        realized_pnl_quote=D(data["realized_pnl_quote"]),
+        close_reason=data["close_reason"],
+    )
+    deal.events = [
+        PaperEvent(
+            event_type=event["event_type"],
+            detail=event["detail"],
+            price=D(event["price"]),
+            quote_amount=D(event["quote_amount"]),
+            base_quantity=D(event["base_quantity"]),
+        )
+        for event in data["events"]
+    ]
+    return deal
