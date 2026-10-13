@@ -342,7 +342,9 @@ def paper_deal_start(
             raise ValueError(
                 "Total allocation cap would be exceeded by active and new deal reservations"
             )
-        ticker = BinanceSpotMarketData().ticker(normalized)
+        market_data = BinanceSpotMarketData()
+        ticker = market_data.ticker(normalized)
+        market_data.validate_minimum_order_sizes(normalized, config, ticker.last)
         deal = start_paper_deal(config, normalized, ticker.last)
     except HTTPException:
         raise
