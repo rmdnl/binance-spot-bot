@@ -142,7 +142,7 @@ def test_autonomous_candidate_opens_only_a_simulated_paper_deal(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
-    cfg = config(start_condition="autonomous", symbols=["BTC/USDT"])
+    cfg = config(start_condition="autonomous", symbols=["BTC/USDT"], rsi_max_entry=65, adx_min=12)
     session.add(StrategyRecord(name=cfg.name, config_json=cfg.model_dump_json(), enabled=True))
     session.commit()
 
