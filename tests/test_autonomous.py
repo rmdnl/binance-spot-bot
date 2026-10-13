@@ -119,3 +119,41 @@ def test_enabled_autonomous_profile_scans_closed_candle_without_real_orders(monk
     assert detail["candle_timestamp_ms"] == candles[-2][0]
     session.close()
     engine.dispose()
+
+
+
+def test_autonomous_candidate_opens_only_a_simulated_paper_deal(monkeypatch):
+    import math
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from dca_bot.db import Base
+    from dca_bot.models import PaperDealRecord, StrategyRecord
+    from dca_bot import worker
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    cfg = config(start_condition="autonomous", symbols=["BTC/USDT"])
+    session.add(StrategyRecord(name=cfg.name, config_json=cfg.model_dump_json(), enabled=True))
+    session.commit()
+
+    closes = [100 + i * 0.03 + 0.5 * math.sin(i * 0.3 + 1.2) for i in range(350)]
+    candles = candles_from_closes(closes)
+
+    class FakeMarketData:
+        def candles(self, symbol, timeframe, limit=500):
+            return candles[-limit:]
+
+    monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
+    result = worker.scan_autonomous_strategies(session)
+
+    assert len(result["started"]) == 1
+    assert result["started"][0]["symbol"] == "BTC/USDT"
+    assert result["failures"] == []
+    assert session.query(PaperDealRecord).count() == 1
+    paper_deal = session.query(PaperDealRecord).one()
+    assert paper_deal.status == "active"
+    assert "orders_sent_to_exchange" not in result
+    session.close()
+    engine.dispose()
