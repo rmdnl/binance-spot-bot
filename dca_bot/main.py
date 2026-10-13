@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -173,7 +174,22 @@ def strategy_analyze(
         config = config.model_copy(update={"timeframe": timeframe})
         limit = min(1000, max(config.ema_slow + 50, config.atr_period * 3 + 10, 300))
         candles = BinanceSpotMarketData().candles(normalized, timeframe, limit=limit)
-        decision = analyze_market(normalized, timeframe, candles, config)
+        if len(candles) < 2:
+            raise ValueError("Not enough Spot candles to identify the latest closed candle")
+        closed_candles = candles[:-1]
+        timeframe_seconds = {
+            "1m": 60, "3m": 180, "5m": 300, "15m": 900,
+            "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400,
+            "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400,
+        }[timeframe]
+        try:
+            latest_closed_ms = int(closed_candles[-1][0])
+        except (TypeError, ValueError, OverflowError, IndexError) as exc:
+            raise ValueError("Latest closed candle has an invalid timestamp") from exc
+        candle_age_seconds = time.time() - (latest_closed_ms / 1000)
+        if candle_age_seconds < -60 or candle_age_seconds > timeframe_seconds * 2:
+            raise ValueError("Latest closed candle is stale or has a future timestamp")
+        decision = analyze_market(normalized, timeframe, closed_candles, config)
     except HTTPException:
         raise
     except ValueError as exc:
