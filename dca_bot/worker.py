@@ -15,7 +15,7 @@ from .autonomous import analyze_market
 from .models import AuditEvent, PaperDealRecord, StrategyRecord
 from .strategy import StrategyConfig
 from .paper_engine import deserialize_paper_deal, serialize_paper_deal, start_paper_deal, update_paper_deal
-from .risk import reserved_capital_quote
+from .risk import reserved_capital_quote, strategy_risk_status
 
 logger = logging.getLogger(__name__)
 
@@ -149,8 +149,18 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
         for profile in profiles:
             try:
                 config = StrategyConfig.model_validate_json(profile.config_json)
-            except ValueError as exc:
-                result["failures"].append({"strategy_id": profile.id, "error": str(exc)})
+                risk_status = strategy_risk_status(session, profile)
+            except Exception as exc:
+                result["failures"].append({"strategy_id": profile.id, "error": "Risk evaluation failed; entries blocked"})
+                logger.warning("Risk evaluation failed for strategy %s: %s", profile.id, exc)
+                continue
+            if risk_status["blocked"]:
+                session.add(AuditEvent(
+                    event_type="risk_entry_blocked",
+                    detail=json.dumps({"strategy_id": profile.id, "reason": risk_status["reason"], "source": "autonomous"}),
+                ))
+                for symbol in config.symbols:
+                    result["waited"].append({"strategy_id": profile.id, "symbol": symbol, "reason": str(risk_status["reason"])})
                 continue
             for symbol in config.symbols:
                 key = (profile.id, symbol)
