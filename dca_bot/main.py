@@ -104,7 +104,7 @@ def render_dashboard(request: Request, db: Session, *, saved: bool = False, erro
             strategies.append({
                 "id": row.id,
                 "name": config.name,
-                "symbols": config.symbols,
+                "symbols": (["Automatic USDT discovery"] if config.pair_selection_mode == "automatic_usdt" else config.symbols),
                 "enabled": row.enabled,
                 "config": config.model_dump(),
             })
@@ -500,7 +500,11 @@ def save_strategy(
     strategy_id: str = Form(""),
     reference_price: str = Form(""),
     name: str = Form(...),
-    symbols: str = Form(...),
+    symbols: str = Form("BTCUSDT"),
+    pair_selection_mode: str = Form("manual"),
+    discovery_min_quote_volume_24h: float = Form(5_000_000),
+    discovery_max_spread_pct: float = Form(0.25),
+    discovery_max_candidates: int = Form(10),
     base_order_quote: float = Form(...),
     safety_order_quote: float = Form(...),
     max_safety_orders: int = Form(...),
@@ -558,7 +562,11 @@ def save_strategy(
             raise ValueError("Autonomous paper mode requires the Autonomous start condition.")
         config = StrategyConfig(
             name=name,
-            symbols=[item.strip() for item in symbols.split(",") if item.strip()],
+            symbols=[item.strip() for item in symbols.split(",") if item.strip()] or ["BTC/USDT"],
+            pair_selection_mode=pair_selection_mode,
+            discovery_min_quote_volume_24h=discovery_min_quote_volume_24h,
+            discovery_max_spread_pct=discovery_max_spread_pct,
+            discovery_max_candidates=discovery_max_candidates,
             base_order_quote=base_order_quote,
             safety_order_quote=safety_order_quote,
             max_safety_orders=max_safety_orders,

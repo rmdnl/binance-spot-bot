@@ -8,6 +8,10 @@ class StrategyConfig(BaseModel):
     name: str = Field(default='My DCA strategy', min_length=1, max_length=80)
     enabled: bool = False
     symbols: list[str] = Field(default_factory=lambda: ['BTC/USDT'], min_length=1, max_length=30)
+    pair_selection_mode: Literal['manual', 'automatic_usdt'] = 'manual'
+    discovery_min_quote_volume_24h: float = Field(default=5_000_000, ge=0, le=1_000_000_000_000)
+    discovery_max_spread_pct: float = Field(default=0.25, gt=0, le=10)
+    discovery_max_candidates: int = Field(default=10, ge=1, le=100)
     quote_asset: str = 'USDT'
     order_size_mode: Literal['fixed_quote', 'balance_percent'] = 'fixed_quote'
     base_order_quote: float = Field(default=10.0, gt=0, le=1_000_000)

@@ -326,6 +326,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setField('name', config.name || item.name);
     setField('symbols', (config.symbols || item.symbols || []).join(', '));
     [
+      'pair_selection_mode','discovery_min_quote_volume_24h','discovery_max_spread_pct','discovery_max_candidates',
       'base_order_quote','safety_order_quote','max_safety_orders','take_profit_pct','take_profit_basis',
       'dca_mode','averaging_method','safety_order_base_quantity','start_condition','stop_loss_basis',
       'breakeven_activation_pct','breakeven_offset_pct','max_deal_duration_hours',
