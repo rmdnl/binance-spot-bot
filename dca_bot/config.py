@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     session_cookie_secure: bool = False
     session_max_age_seconds: int = Field(default=3600, ge=300, le=86400)
     paper_poll_interval_seconds: int = Field(default=10, ge=3, le=300)
+    # Shared account-wide reservation cap across every strategy profile (USDT quote).
+    global_capital_limit_quote: float = Field(default=600.0, gt=0, le=1_000_000_000)
 
     def assert_safe(self) -> None:
         # Exchange execution is intentionally not implemented. Reject any setting
