@@ -70,6 +70,7 @@ def strategy_risk_status(session: Session, strategy_record, now: datetime | None
     from .models import AuditEvent, PaperDealRecord, StrategyRiskState
     from .paper_engine import deserialize_paper_deal, estimate_unrealized_pnl_quote
     from .strategy import StrategyConfig
+    from .config import get_settings
 
     current_time = now or datetime.now(timezone.utc)
     if current_time.tzinfo is None:
@@ -98,6 +99,26 @@ def strategy_risk_status(session: Session, strategy_record, now: datetime | None
                 if updated_at.date() == current_time.date():
                     realized_today += deal.realized_pnl_quote
         elif deal.status == "active":
+            # Never let a stale persisted mark drive drawdown decisions. The
+            # worker refreshes active deals on its poll cadence; if that refresh
+            # has failed or stopped, entry paths must fail closed until a fresh
+            # mark is persisted.
+            marked_at = row.updated_at
+            if marked_at is None:
+                raise ValueError(f"Active paper deal {row.id} has no mark timestamp")
+            if marked_at.tzinfo is None:
+                marked_at = marked_at.replace(tzinfo=timezone.utc)
+            else:
+                marked_at = marked_at.astimezone(timezone.utc)
+            mark_age_seconds = (current_time - marked_at).total_seconds()
+            max_mark_age_seconds = max(
+                60,
+                get_settings().paper_poll_interval_seconds * 3,
+            )
+            if mark_age_seconds < -60 or mark_age_seconds > max_mark_age_seconds:
+                raise ValueError(
+                    f"Active paper deal {row.id} mark is stale; risk evaluation must fail closed"
+                )
             unrealized_active += estimate_unrealized_pnl_quote(deal)
 
     state = session.get(StrategyRiskState, strategy_record.id)
