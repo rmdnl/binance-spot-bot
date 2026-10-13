@@ -28,7 +28,7 @@ class StrategyConfig(BaseModel):
     breakeven_offset_pct: float = Field(default=0.0, ge=-10, le=10)
     reinvest_profit: bool = False
     max_deal_duration_hours: int = Field(default=0, ge=0, le=8760)
-    start_condition: Literal['manual', 'immediately', 'ema_trend', 'rsi_oversold', 'ema_rsi', 'webhook'] = 'manual'
+    start_condition: Literal['manual', 'immediately', 'autonomous', 'ema_trend', 'rsi_oversold', 'ema_rsi', 'webhook'] = 'manual'
     trailing_take_profit_enabled: bool = False
     trailing_activation_pct: float = Field(default=1.0, ge=0, le=100)
     trailing_callback_pct: float = Field(default=0.3, gt=0, le=50)
