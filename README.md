@@ -6,7 +6,7 @@ A self-hosted Binance **Spot-only** DCA trading dashboard inspired by the workfl
 
 ## Current implementation status
 
-The dashboard has authenticated read-only Binance Spot ticker and OHLCV analysis endpoints, plus a DCA ladder/capital preview. The autonomous engine calculates EMA, RSI, ATR and ADX, recommends volatility-aware DCA spacing/TP, and blocks entries when the long-only trend or capital checks fail. In paper mode, explicitly enabled profiles using `Autonomous paper mode` are scanned on closed candles and may open simulated deals. This is paper execution only: no exchange orders are submitted.
+The dashboard has authenticated read-only Binance Spot ticker and OHLCV analysis endpoints, plus a DCA ladder/capital preview. The autonomous engine uses EMA, RSI, ATR and ADX as entry context, but follows a **DCA-first** policy: a bearish trend by itself does not block a new deal. It avoids starting overheated or high-volatility setups, checks the full DCA ladder against capital caps, and then lets the paper DCA engine trigger safety orders strictly from the configured downside price levels. Indicators are not re-evaluated to veto each safety order after a deal starts. In paper mode, explicitly enabled profiles using `Autonomous paper mode` are scanned on closed candles and may open simulated deals. This is paper execution only: no exchange orders are submitted.
 
 See [FEATURE_PARITY.md](FEATURE_PARITY.md) for the target feature matrix and delivery gates, and [DEPLOYMENT.md](DEPLOYMENT.md) for the recommended Cloudflare Tunnel + Access setup.
 

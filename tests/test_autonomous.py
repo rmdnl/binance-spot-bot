@@ -40,12 +40,14 @@ def test_autonomous_analysis_fails_closed_when_candle_history_is_too_short():
         calculate_indicators(candles_from_closes(range(100, 120)), config())
 
 
-def test_autonomous_engine_blocks_clear_downtrend_and_returns_bounded_parameters():
+def test_dca_first_engine_allows_a_bearish_market_when_risk_bounds_pass():
+    # DCA safety orders are meant to average down. A bearish EMA cross alone
+    # must not turn the bot into a trend-following strategy.
     closes = [200 - i * 0.7 for i in range(100)]
     result = analyze_market("BTCUSDT", "15m", candles_from_closes(closes), config())
 
-    assert result.action == "wait"
-    assert "Downtrend" in result.reason
+    assert result.action == "candidate"
+    assert "DCA-first" in result.reason
     assert result.symbol == "BTC/USDT"
     assert 0.5 <= result.parameters["initial_deviation_pct"] <= 3.0
     assert 1.2 <= result.parameters["deviation_scale"] <= 1.8
@@ -104,18 +106,22 @@ def test_enabled_autonomous_profile_scans_closed_candle_without_real_orders(monk
 
     monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
     first = worker.scan_autonomous_strategies(session)
-    assert first["started"] == []
+    assert len(first["started"]) == 1
     assert first["failures"] == []
-    assert first["waited"][0]["reason"].startswith("Downtrend")
-    assert session.query(PaperDealRecord).count() == 0
+    assert first["waited"] == []
+    assert session.query(PaperDealRecord).count() == 1
 
     # The same closed candle is not evaluated twice.
     second = worker.scan_autonomous_strategies(session)
-    assert second == {"started": [], "waited": [], "failures": []}
+    # The active-deal guard runs before the candle-idempotency check, so the
+    # second scan reports the existing deal without evaluating/logging again.
+    assert second["started"] == []
+    assert second["failures"] == []
+    assert second["waited"][0]["reason"] == "pair already has an active deal"
     events = session.query(AuditEvent).filter_by(event_type="autonomous_decision").all()
     assert len(events) == 1
     detail = json.loads(events[0].detail)
-    assert detail["action"] == "wait"
+    assert detail["action"] == "candidate"
     assert detail["candle_timestamp_ms"] == candles[-2][0]
     session.close()
     engine.dispose()
