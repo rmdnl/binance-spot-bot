@@ -93,6 +93,10 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
     if normalized not in config.symbols:
         raise ValueError(f"{normalized} is not included in this strategy")
     price0 = _positive_price(price)
+    if config.start_condition not in {"manual", "immediately"}:
+        raise ValueError("This start condition is configured but not implemented in the paper engine yet")
+    if config.entry_filter not in {"manual", "none"}:
+        raise ValueError("This entry filter is configured but not implemented in the paper engine yet")
     if config.averaging_method == "fixed_coin_amount":
         summary = build_dca_summary(
             base_price=price0,

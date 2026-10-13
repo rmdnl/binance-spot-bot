@@ -129,3 +129,9 @@ def test_max_deal_duration_closes_an_expired_paper_deal():
     assert events[-1].event_type == "deal_closed"
     assert deal.close_reason == "max_deal_duration"
     assert deal.status == "closed"
+
+
+
+def test_paper_engine_fails_closed_for_unimplemented_indicator_entry():
+    with pytest.raises(ValueError, match="not implemented"):
+        start_paper_deal(config(start_condition="ema_trend"), "BTC/USDT", D("100"))
