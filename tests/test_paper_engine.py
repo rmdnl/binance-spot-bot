@@ -115,3 +115,17 @@ def test_paper_deal_state_round_trips_for_restart_recovery():
     assert restored.safety_orders_filled == deal.safety_orders_filled
     assert restored.average_entry_price == deal.average_entry_price
     assert [event.event_type for event in restored.events] == [event.event_type for event in deal.events]
+
+
+
+def test_max_deal_duration_closes_an_expired_paper_deal():
+    import time
+
+    deal = start_paper_deal(
+        config(max_safety_orders=0, max_deal_duration_hours=1), "BTC/USDT", D("100")
+    )
+    deal.started_at_epoch = time.time() - 3601
+    events = update_paper_deal(deal, D("99"))
+    assert events[-1].event_type == "deal_closed"
+    assert deal.close_reason == "max_deal_duration"
+    assert deal.status == "closed"

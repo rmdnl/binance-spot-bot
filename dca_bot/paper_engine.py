@@ -35,6 +35,7 @@ class PaperDeal:
     base_quantity: Decimal
     entry_fees_quote: Decimal
     safety_levels: tuple[SafetyOrderLevel, ...]
+    started_at_epoch: float
     safety_orders_filled: int = 0
     highest_price: Decimal = D("0")
     trailing_active: bool = False
@@ -60,6 +61,7 @@ class PaperDeal:
             "strategy_name": self.strategy_name,
             "symbol": self.symbol,
             "status": self.status,
+            "started_at_epoch": self.started_at_epoch,
             "base_price": str(self.base_price),
             "last_price": str(self.last_price),
             "quote_spent": str(self.quote_spent),
@@ -132,6 +134,7 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
         base_quantity=base_qty,
         entry_fees_quote=entry_fee,
         safety_levels=summary.safety_orders,
+        started_at_epoch=time.time(),
         highest_price=price0,
     )
     deal.events.append(PaperEvent(
@@ -169,6 +172,10 @@ def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[Pap
         return []
     deal.last_price = current
     emitted: list[PaperEvent] = []
+    if deal.config.max_deal_duration_hours > 0:
+        max_age = deal.config.max_deal_duration_hours * 3600
+        if time.time() - deal.started_at_epoch >= max_age:
+            return [_close(deal, current, "max_deal_duration")]
 
     # Safety orders are limit buys; if price crosses several levels, process them in order.
     while deal.safety_orders_filled < len(deal.safety_levels):
@@ -255,6 +262,7 @@ def serialize_paper_deal(deal: PaperDeal) -> str:
         "symbol": deal.symbol,
         "status": deal.status,
         "config": deal.config.model_dump(),
+        "started_at_epoch": deal.started_at_epoch,
         "base_price": str(deal.base_price),
         "last_price": str(deal.last_price),
         "quote_spent": str(deal.quote_spent),
@@ -317,6 +325,7 @@ def deserialize_paper_deal(payload: str) -> PaperDeal:
         base_quantity=D(data["base_quantity"]),
         entry_fees_quote=D(data["entry_fees_quote"]),
         safety_levels=levels,
+        started_at_epoch=float(data["started_at_epoch"]),
         safety_orders_filled=int(data["safety_orders_filled"]),
         highest_price=D(data["highest_price"]),
         trailing_active=bool(data["trailing_active"]),

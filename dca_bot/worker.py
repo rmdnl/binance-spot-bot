@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .market_data import BinanceSpotMarketData
-from .models import AuditEvent, PaperDealRecord
+from .models import AuditEvent, PaperDealRecord, StrategyRecord
+from .strategy import StrategyConfig
 from .paper_engine import deserialize_paper_deal, serialize_paper_deal, update_paper_deal
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,43 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
                             "status": deal.status,
                         }),
                     ))
+                if (
+                    deal.status == "closed"
+                    and deal.config.reinvest_profit
+                    and deal.realized_pnl_quote > 0
+                    and "deal_closed" in event_types
+                ):
+                    strategy_record = session.get(StrategyRecord, row.strategy_id)
+                    if strategy_record is not None:
+                        try:
+                            prior = StrategyConfig.model_validate_json(strategy_record.config_json)
+                            candidate = StrategyConfig.model_validate({
+                                **prior.model_dump(),
+                                "base_order_quote": prior.base_order_quote + float(deal.realized_pnl_quote),
+                            })
+                            required = candidate.estimated_max_deal_capital(float(deal.last_price))
+                            if required <= candidate.max_capital_per_deal and required * candidate.max_active_deals <= candidate.max_total_allocation:
+                                strategy_record.config_json = candidate.model_dump_json()
+                                strategy_record.name = candidate.name
+                                session.add(AuditEvent(
+                                    event_type="paper_profit_reinvested",
+                                    detail=json.dumps({
+                                        "deal_id": deal.id,
+                                        "strategy_id": row.strategy_id,
+                                        "profit_quote": str(deal.realized_pnl_quote),
+                                        "next_base_order_quote": candidate.base_order_quote,
+                                    }),
+                                ))
+                            else:
+                                session.add(AuditEvent(
+                                    event_type="paper_reinvestment_blocked",
+                                    detail=json.dumps({"deal_id": deal.id, "reason": "capital cap would be exceeded"}),
+                                ))
+                        except ValueError:
+                            session.add(AuditEvent(
+                                event_type="paper_reinvestment_blocked",
+                                detail=json.dumps({"deal_id": deal.id, "reason": "updated strategy failed validation"}),
+                            ))
             except Exception as exc:
                 logger.warning("Paper deal poll failed for %s: %s", row.id, exc)
                 failures.append({
