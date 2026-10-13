@@ -427,6 +427,7 @@ def test_automatic_scanner_starts_highest_scoring_signal_first(monkeypatch):
 
         class FakeMarketData:
             requested_symbols = []
+            validated_orders = []
 
             def discover_usdt_symbols(self, **kwargs):
                 # Deliberately return lower-scoring ETH first to prove ranking is signal-led.
@@ -435,6 +436,9 @@ def test_automatic_scanner_starts_highest_scoring_signal_first(monkeypatch):
             def candles(self, symbol, timeframe, limit):
                 self.requested_symbols.append(symbol)
                 return candles
+
+            def validate_minimum_order_sizes(self, symbol, config, price):
+                self.validated_orders.append((symbol, price))
 
         fake_market = FakeMarketData()
         monkeypatch.setattr(worker, "BinanceSpotMarketData", lambda: fake_market)
