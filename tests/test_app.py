@@ -217,3 +217,40 @@ def test_paper_deals_endpoint_withholds_mismatched_persisted_symbol(monkeypatch)
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
+
+
+def test_manual_paper_entry_persistence_failure_rolls_back_and_fails_closed(monkeypatch):
+    from decimal import Decimal
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+
+    class FailingSession:
+        def __init__(self):
+            self.added = []
+            self.rolled_back = False
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            raise RuntimeError("simulated commit failure")
+
+        def rollback(self):
+            self.rolled_back = True
+
+    deal = SimpleNamespace(
+        id="deal-1",
+        symbol="BTC/USDT",
+        status="active",
+        base_price=Decimal("100"),
+    )
+    monkeypatch.setattr(main, "serialize_paper_deal", lambda value: "serialized-state")
+    session = FailingSession()
+
+    with pytest.raises(HTTPException) as error:
+        main.persist_paper_entry(session, 1, deal)
+
+    assert error.value.status_code == 503
+    assert "inspect persisted deal state before retrying" in error.value.detail
+    assert session.rolled_back is True
+    assert len(session.added) == 2
