@@ -699,7 +699,7 @@ def test_autonomous_history_restores_quiet_pairs_beyond_previous_global_limit():
                     detail=(
                         '{"strategy_id": %d, "symbol": "ALT%d/USDT", '
                         '"candle_timestamp_ms": %d}'
-                    ) % (index + 2, index, index),
+                    ) % (index + 2, index, index + 1),
                 ),
                 models.AuditEvent(
                     event_type="autonomous_entry_started",
