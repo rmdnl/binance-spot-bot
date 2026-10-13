@@ -198,3 +198,27 @@ def test_strategy_risk_guard_fails_closed_on_persisted_status_mismatch():
     finally:
         session.close()
         engine.dispose()
+
+
+def test_strategy_risk_guard_fails_closed_if_latched_drawdown_reason_is_missing():
+    engine, session = _risk_test_session()
+    try:
+        from dca_bot.models import StrategyRiskState
+        strategy = _insert_closed_loss(
+            session,
+            _risk_test_strategy(daily_loss_limit_quote=100, max_equity_drawdown_pct=10),
+            pnl="0",
+        )
+        status = strategy_risk_status(session, strategy)
+        state = session.get(StrategyRiskState, strategy.id)
+        state.drawdown_tripped = True
+        state.drawdown_trip_reason = None
+        session.flush()
+
+        status = strategy_risk_status(session, strategy)
+        assert status["blocked"] is True
+        assert status["drawdown_tripped"] is True
+        assert "reason is missing" in status["reason"]
+    finally:
+        session.close()
+        engine.dispose()
