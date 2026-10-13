@@ -53,3 +53,102 @@ def reserved_capital_quote(active_deals) -> Decimal:
             raise ValueError("Active deal has an invalid capital reservation")
         total += cap
     return total
+
+
+from datetime import datetime, timezone
+import json
+from sqlalchemy.orm import Session
+
+
+def strategy_risk_status(session: Session, strategy_record, now: datetime | None = None) -> dict[str, object]:
+    """Evaluate paper-only loss guards and persist a drawdown high-water mark.
+
+    Virtual starting equity is the strategy's total allocation plus its reserve.
+    Realized closed PnL and fee/slippage-aware active mark-to-market PnL are added
+    to that baseline. This is a paper-account proxy, not exchange wallet equity.
+    """
+    from .models import AuditEvent, PaperDealRecord, StrategyRiskState
+    from .paper_engine import deserialize_paper_deal, estimate_unrealized_pnl_quote
+    from .strategy import StrategyConfig
+
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    current_time = current_time.astimezone(timezone.utc)
+    config = StrategyConfig.model_validate_json(strategy_record.config_json)
+    rows = session.query(PaperDealRecord).filter_by(strategy_id=strategy_record.id).all()
+    realized_total = Decimal("0")
+    realized_today = Decimal("0")
+    unrealized_active = Decimal("0")
+    for row in rows:
+        deal = deserialize_paper_deal(row.state_json)
+        if deal.status == "closed":
+            realized_total += deal.realized_pnl_quote
+            updated_at = row.updated_at
+            if updated_at is not None:
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+                else:
+                    updated_at = updated_at.astimezone(timezone.utc)
+                if updated_at.date() == current_time.date():
+                    realized_today += deal.realized_pnl_quote
+        elif deal.status == "active":
+            unrealized_active += estimate_unrealized_pnl_quote(deal)
+
+    state = session.get(StrategyRiskState, strategy_record.id)
+    if state is None:
+        reference = Decimal(str(config.max_total_allocation)) + Decimal(str(config.reserve_balance))
+        equity = reference + realized_total + unrealized_active
+        state = StrategyRiskState(
+            strategy_id=strategy_record.id,
+            reference_equity_quote=str(reference),
+            peak_equity_quote=str(max(reference, equity)),
+            drawdown_tripped=False,
+        )
+        session.add(state)
+    else:
+        reference = Decimal(state.reference_equity_quote)
+        equity = reference + realized_total + unrealized_active
+        peak = Decimal(state.peak_equity_quote)
+        if equity > peak:
+            state.peak_equity_quote = str(equity)
+
+    peak_equity = Decimal(state.peak_equity_quote)
+    drawdown_pct = Decimal("0") if peak_equity <= 0 else max(
+        Decimal("0"), (peak_equity - equity) / peak_equity * Decimal("100")
+    )
+    if not state.drawdown_tripped and drawdown_pct >= Decimal(str(config.max_equity_drawdown_pct)):
+        state.drawdown_tripped = True
+        state.drawdown_trip_reason = (
+            f"Paper equity drawdown {drawdown_pct:.4f}% reached limit "
+            f"{config.max_equity_drawdown_pct:.4f}%"
+        )
+        session.add(AuditEvent(
+            event_type="risk_drawdown_tripped",
+            detail=json.dumps({
+                "strategy_id": strategy_record.id,
+                "drawdown_pct": str(drawdown_pct),
+                "limit_pct": config.max_equity_drawdown_pct,
+                "equity_quote": str(equity),
+                "peak_equity_quote": str(peak_equity),
+            }),
+        ))
+
+    daily_loss_tripped = realized_today <= -Decimal(str(config.daily_loss_limit_quote))
+    reason = state.drawdown_trip_reason if state.drawdown_tripped else None
+    if reason is None and daily_loss_tripped:
+        reason = (
+            f"Daily realized loss {realized_today:.8f} USDT reached limit "
+            f"-{config.daily_loss_limit_quote:.8f} USDT"
+        )
+    return {
+        "blocked": reason is not None,
+        "reason": reason,
+        "reference_equity_quote": str(reference),
+        "equity_quote": str(equity),
+        "peak_equity_quote": str(peak_equity),
+        "drawdown_pct": str(drawdown_pct),
+        "drawdown_tripped": bool(state.drawdown_tripped),
+        "daily_realized_pnl_quote": str(realized_today),
+        "daily_loss_tripped": daily_loss_tripped,
+    }
