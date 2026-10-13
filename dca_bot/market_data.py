@@ -8,6 +8,9 @@ from typing import Any
 
 import ccxt
 
+from .dca_math import build_dca_summary
+from .strategy import StrategyConfig
+
 
 @dataclass(frozen=True)
 class SpotTicker:
@@ -82,6 +85,67 @@ class BinanceSpotMarketData:
             ask=ask,
             timestamp_ms=timestamp_ms,
         )
+
+
+    def validate_minimum_order_sizes(
+        self, symbol: str, config: StrategyConfig, price: Decimal | str | float
+    ) -> None:
+        """Reject a simulated DCA ladder if any planned order violates market minimums.
+
+        This checks Binance market minimum amount and minimum quote cost from CCXT
+        metadata. It does not replace precision/step-size validation for a future
+        execution adapter; exchange execution remains disabled.
+        """
+        normalized = self.normalize_symbol(symbol)
+        markets = self.exchange.load_markets()
+        market = markets.get(normalized)
+        if not market:
+            raise ValueError(f"Binance Spot market {normalized} was not found")
+        if market.get("spot") is not True or market.get("active") is False:
+            raise ValueError(f"{normalized} is not an active Binance Spot market")
+
+        price0 = Decimal(str(price))
+        if not price0.is_finite() or price0 <= 0:
+            raise ValueError("Reference price must be positive and finite")
+        limits = market.get("limits") or {}
+        amount_limits = limits.get("amount") or {}
+        cost_limits = limits.get("cost") or {}
+        min_amount_raw = amount_limits.get("min")
+        min_cost_raw = cost_limits.get("min")
+        min_amount = Decimal(str(min_amount_raw)) if min_amount_raw is not None else Decimal("0")
+        min_cost = Decimal(str(min_cost_raw)) if min_cost_raw is not None else Decimal("0")
+        if (not min_amount.is_finite() or min_amount < 0
+                or not min_cost.is_finite() or min_cost < 0):
+            raise ValueError(f"{normalized} has invalid Binance minimum-order metadata")
+
+        summary = build_dca_summary(
+            base_price=price0,
+            base_order_quote=Decimal(str(config.base_order_quote)),
+            safety_order_quote=Decimal(str(config.safety_order_quote)),
+            safety_order_count=config.max_safety_orders,
+            initial_deviation_pct=Decimal(str(config.initial_deviation_pct)),
+            deviation_scale=Decimal(str(config.deviation_scale)),
+            safety_volume_scale=Decimal(str(config.safety_order_volume_scale)),
+            averaging_method=config.averaging_method,
+            safety_order_base_quantity=Decimal(str(config.safety_order_base_quantity)),
+            dca_mode=config.dca_mode,
+        )
+        planned_orders = [("base order", summary.base_quote_amount, summary.base_quantity)]
+        planned_orders.extend(
+            (f"safety order {level.index}", level.quote_amount, level.base_quantity)
+            for level in summary.safety_orders
+        )
+        for label, quote_amount, base_quantity in planned_orders:
+            if quote_amount < min_cost:
+                raise ValueError(
+                    f"{normalized} {label} quote value {quote_amount} USDT is below "
+                    f"the market minimum cost {min_cost} USDT"
+                )
+            if base_quantity < min_amount:
+                raise ValueError(
+                    f"{normalized} {label} quantity {base_quantity} is below "
+                    f"the market minimum amount {min_amount}"
+                )
 
 
     def discover_usdt_symbols(
