@@ -81,6 +81,74 @@ class BinanceSpotMarketData:
         )
 
 
+    def discover_usdt_symbols(
+        self,
+        *,
+        min_quote_volume_24h: float = 5_000_000,
+        max_spread_pct: float = 0.25,
+        limit: int = 10,
+    ) -> list[str]:
+        """Return liquid, fresh, active Binance Spot BASE/USDT markets, ranked by quote volume.
+
+        This uses public bulk ticker data once per discovery pass. It does not use
+        credentials or submit orders. Missing/stale tickers and leveraged tokens
+        are rejected rather than guessed into the candidate universe.
+        """
+        if min_quote_volume_24h < 0 or max_spread_pct <= 0 or not 1 <= limit <= 100:
+            raise ValueError("Invalid automatic pair discovery limits")
+        markets = self.exchange.load_markets()
+        tickers = self.exchange.fetch_tickers()
+        if not isinstance(tickers, dict):
+            raise ValueError("Exchange returned invalid bulk ticker data")
+        now_ms = int(time.time() * 1000)
+        ranked: list[tuple[float, str]] = []
+        leveraged_suffixes = ("UP", "DOWN", "BULL", "BEAR", "2L", "2S", "3L", "3S", "5L", "5S")
+        for symbol, market in markets.items():
+            if (
+                market.get("spot") is not True
+                or market.get("active") is not True
+                or market.get("quote") != "USDT"
+                or not market.get("base")
+                or market.get("base") == "USDT"
+            ):
+                continue
+            base = str(market["base"]).upper()
+            if base.endswith(leveraged_suffixes):
+                continue
+            ticker = tickers.get(symbol)
+            if not isinstance(ticker, dict):
+                continue
+            try:
+                last = float(ticker.get("last"))
+                bid = float(ticker.get("bid"))
+                ask = float(ticker.get("ask"))
+                timestamp = ticker.get("timestamp")
+                quote_volume = ticker.get("quoteVolume")
+                if quote_volume is None:
+                    base_volume = float(ticker.get("baseVolume"))
+                    quote_volume = base_volume * last
+                quote_volume = float(quote_volume)
+                timestamp_ms = int(timestamp) if timestamp is not None else 0
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                not all(map(lambda value: value > 0 and value < float("inf"), (last, bid, ask, quote_volume)))
+                or ask < bid
+                or timestamp_ms <= 0
+                or timestamp_ms > now_ms + 60_000
+                or now_ms - timestamp_ms > 180_000
+                or quote_volume < min_quote_volume_24h
+            ):
+                continue
+            midpoint = (ask + bid) / 2
+            spread_pct = ((ask - bid) / midpoint) * 100
+            if spread_pct > max_spread_pct:
+                continue
+            normalized = self.normalize_symbol(symbol)
+            ranked.append((quote_volume, normalized))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [symbol for _, symbol in ranked[:limit]]
+
     def candles(self, symbol: str, timeframe: str, limit: int = 500) -> list[list[float]]:
         """Fetch public Binance Spot OHLCV candles; no credentials or orders are used."""
         normalized = self.normalize_symbol(symbol)

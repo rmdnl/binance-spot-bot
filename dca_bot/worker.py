@@ -184,7 +184,32 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                 for symbol in config.symbols:
                     result["waited"].append({"strategy_id": profile.id, "symbol": symbol, "reason": str(risk_status["reason"])})
                 continue
-            for symbol in config.symbols:
+
+            if config.pair_selection_mode == "automatic_usdt":
+                try:
+                    symbols_to_scan = exchange.discover_usdt_symbols(
+                        min_quote_volume_24h=config.discovery_min_quote_volume_24h,
+                        max_spread_pct=config.discovery_max_spread_pct,
+                        limit=config.discovery_max_candidates,
+                    )
+                except Exception as exc:
+                    logger.warning("Automatic USDT pair discovery failed for strategy %s: %s", profile.id, exc)
+                    result["failures"].append({
+                        "strategy_id": profile.id,
+                        "error": "Automatic USDT pair discovery unavailable; entries blocked",
+                    })
+                    continue
+                if not symbols_to_scan:
+                    result["waited"].append({
+                        "strategy_id": profile.id,
+                        "symbol": "*",
+                        "reason": "No active USDT Spot pair passed liquidity, spread, and ticker-freshness filters",
+                    })
+                    continue
+            else:
+                symbols_to_scan = config.symbols
+
+            for symbol in symbols_to_scan:
                 key = (profile.id, symbol)
                 try:
                     active_rows = session.query(PaperDealRecord).filter_by(status="active").all()
@@ -193,6 +218,15 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                     ]
                     strategy_deals = [item for item in active_deals if item[0].strategy_id == profile.id]
                     symbol_deals = [item for item in strategy_deals if item[1].symbol == symbol]
+                    if config.pair_selection_mode == "automatic_usdt" and any(
+                        deal.symbol == symbol for _, deal in active_deals
+                    ):
+                        result["waited"].append({
+                            "strategy_id": profile.id,
+                            "symbol": symbol,
+                            "reason": "pair already has an active deal in another strategy",
+                        })
+                        continue
                     if len(strategy_deals) >= config.max_active_deals:
                         result["waited"].append({"strategy_id": profile.id, "symbol": symbol, "reason": "active deal limit"})
                         continue
