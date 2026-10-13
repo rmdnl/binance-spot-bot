@@ -199,14 +199,23 @@ def analyze_market(
     # Volatility-aware spacing and TP, bounded to prevent unbounded parameter drift.
     initial_deviation = _bounded(indicators.atr_pct * 1.25, 0.5, 3.0)
     deviation_scale = _bounded(1.2 + indicators.atr_pct / 12.0, 1.2, 1.8)
-    take_profit = _bounded(
-        max(config.take_profit_pct, config.min_net_profit_pct
-            + 2 * config.fee_rate_pct_per_side
-            + 2 * config.slippage_pct_per_side,
-            indicators.atr_pct * 0.8),
-        0.5,
-        5.0,
+    minimum_net_target_pct = (
+        config.min_net_profit_pct
+        + 2 * config.fee_rate_pct_per_side
+        + 2 * config.slippage_pct_per_side
     )
+    desired_take_profit = max(
+        config.take_profit_pct,
+        minimum_net_target_pct,
+        indicators.atr_pct * 0.8,
+    )
+    # StrategyConfig permits targets up to 100%. Do not silently clamp a user's
+    # configured target (or the minimum net target) to 5%, which can make the
+    # paper engine reject every otherwise valid candidate.
+    if desired_take_profit > 100.0:
+        action = "wait"
+        reason = "Required take-profit exceeds the supported 100% strategy limit"
+    take_profit = _bounded(desired_take_profit, 0.5, 100.0)
     safe_count = min(config.max_safety_orders, 8)
     parameters: dict[str, object] = {
         "initial_deviation_pct": initial_deviation,
