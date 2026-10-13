@@ -283,6 +283,7 @@ def test_autonomous_automatic_mode_scans_discovered_usdt_pairs_not_manual_symbol
         class FakeMarketData:
             discovered_args = None
             requested_symbols = []
+            validated_orders = []
 
             def discover_usdt_symbols(self, **kwargs):
                 self.discovered_args = kwargs
@@ -291,6 +292,9 @@ def test_autonomous_automatic_mode_scans_discovered_usdt_pairs_not_manual_symbol
             def candles(self, symbol, timeframe, limit):
                 self.requested_symbols.append(symbol)
                 return candles
+
+            def validate_minimum_order_sizes(self, symbol, config, price):
+                self.validated_orders.append((symbol, price))
 
         fake_market = FakeMarketData()
         monkeypatch.setattr(worker, "BinanceSpotMarketData", lambda: fake_market)
@@ -353,6 +357,9 @@ def test_autonomous_scan_rolls_back_partial_deal_when_entry_audit_fails(monkeypa
 
             def candles(self, symbol, timeframe, limit):
                 return candles
+
+            def validate_minimum_order_sizes(self, symbol, config, price):
+                return None
 
         monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
         monkeypatch.setattr(worker, "analyze_market", lambda symbol, timeframe, rows, cfg: SimpleNamespace(
@@ -457,6 +464,7 @@ def test_automatic_scanner_starts_highest_scoring_signal_first(monkeypatch):
 
         assert [item["symbol"] for item in result["started"]] == ["BTC/USDT"]
         assert sorted(fake_market.requested_symbols) == ["BTC/USDT", "ETH/USDT"]
+        assert fake_market.validated_orders == [("BTC/USDT", 100.0)]
         assert session.query(PaperDealRecord).filter_by(status="active").count() == 1
     finally:
         session.close()
