@@ -92,6 +92,10 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
         normalized = f"{normalized[:-4]}/USDT"
     if normalized not in config.symbols:
         raise ValueError(f"{normalized} is not included in this strategy")
+    if config.order_size_mode != "fixed_quote":
+        raise ValueError(
+            "Balance-percentage sizing is not implemented in paper mode; use fixed_quote"
+        )
     price0 = _positive_price(price)
     if config.estimated_net_tp_pct() < config.min_net_profit_pct:
         raise ValueError(
