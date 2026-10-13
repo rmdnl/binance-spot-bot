@@ -203,8 +203,8 @@ def global_capital_status(session: Session, limit_quote: Decimal) -> dict[str, s
     reserved = reserved_capital_quote(deals)
     remaining = limit_quote - reserved
     return {
-        "limit_quote": str(limit_quote),
-        "reserved_quote": str(reserved),
-        "remaining_quote": str(remaining),
+        "limit_quote": format(limit_quote.normalize(), "f"),
+        "reserved_quote": format(reserved.normalize(), "f"),
+        "remaining_quote": format(remaining.normalize(), "f"),
         "within_limit": str(reserved <= limit_quote).lower(),
     }
