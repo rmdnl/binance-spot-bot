@@ -88,15 +88,32 @@ class StrategyConfig(BaseModel):
             raise ValueError('Trailing activation must be at least the take-profit target')
         return self
 
-    def estimated_max_deal_capital(self) -> float:
-        """Quote amount for all planned orders before filters, fees, and slippage."""
+    def estimated_max_deal_capital(self, reference_price: float | None = None) -> float:
+        """Quote amount for all planned orders before fees and exchange filters."""
+        if self.averaging_method == "fixed_coin_amount":
+            if reference_price is None or reference_price <= 0:
+                raise ValueError("A positive reference price is required to estimate fixed-coin orders")
+            from decimal import Decimal
+            from .dca_math import build_dca_summary
+            summary = build_dca_summary(
+                base_price=Decimal(str(reference_price)),
+                base_order_quote=Decimal(str(self.base_order_quote)),
+                safety_order_quote=Decimal(str(self.safety_order_quote)),
+                safety_order_count=self.max_safety_orders,
+                initial_deviation_pct=Decimal(str(self.initial_deviation_pct)),
+                deviation_scale=Decimal(str(self.deviation_scale)),
+                safety_volume_scale=Decimal(str(self.safety_order_volume_scale)),
+                averaging_method=self.averaging_method,
+                safety_order_base_quantity=Decimal(str(self.safety_order_base_quantity)),
+            )
+            return float(summary.total_quote_required)
         total = self.base_order_quote
         for index in range(self.max_safety_orders):
             total += self.safety_order_quote * (self.safety_order_volume_scale ** index)
         return round(total, 8)
 
-    def estimated_total_capacity(self) -> float:
-        return round(self.estimated_max_deal_capital() * self.max_active_deals, 8)
+    def estimated_total_capacity(self, reference_price: float | None = None) -> float:
+        return round(self.estimated_max_deal_capital(reference_price) * self.max_active_deals, 8)
 
     def estimated_net_tp_pct(self) -> float:
         """Rough estimate only; actual PnL uses confirmed fills and actual commission."""
