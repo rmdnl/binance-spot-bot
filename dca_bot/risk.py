@@ -82,6 +82,11 @@ def strategy_risk_status(session: Session, strategy_record, now: datetime | None
     unrealized_active = Decimal("0")
     for row in rows:
         deal = deserialize_paper_deal(row.state_json)
+        if row.status != deal.status:
+            raise ValueError(
+                f"Persisted paper deal status mismatch for {row.id}; "
+                "risk evaluation must fail closed until state is reconciled"
+            )
         if deal.status == "closed":
             realized_total += deal.realized_pnl_quote
             updated_at = row.updated_at
