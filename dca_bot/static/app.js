@@ -300,6 +300,7 @@ document.addEventListener('DOMContentLoaded', () => {
       activateTab('basic');
       document.getElementById('deals').scrollIntoView({behavior:'smooth', block:'start'});
       await refreshPaperDeals(false);
+      await refreshRiskStatus();
     } catch (error) {
       validation.className = 'validation error';
       validation.textContent = error.message || 'Could not start paper deal.';
@@ -309,7 +310,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }));
 
-  document.getElementById('refresh-paper-deals')?.addEventListener('click', () => refreshPaperDeals(true));
+  document.getElementById('refresh-paper-deals')?.addEventListener('click', async () => {
+    await refreshPaperDeals(true);
+    await refreshRiskStatus();
+  });
   refreshPaperDeals(false);
 
   document.querySelectorAll('[data-edit]').forEach(button => button.addEventListener('click', () => {
