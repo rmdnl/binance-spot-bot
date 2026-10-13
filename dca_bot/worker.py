@@ -196,6 +196,16 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                         raise ValueError("Not enough closed Spot candles")
                     closed_candles = candles[:-1]  # Do not make a decision on the still-forming candle.
                     candle_timestamp_ms = int(closed_candles[-1][0])
+                    timeframe_seconds = {
+                        "1m": 60, "3m": 180, "5m": 300, "15m": 900,
+                        "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400,
+                        "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400,
+                    }.get(config.timeframe)
+                    if timeframe_seconds is None:
+                        raise ValueError("Unsupported timeframe for candle freshness validation")
+                    candle_age_seconds = now - (candle_timestamp_ms / 1000)
+                    if candle_age_seconds < -60 or candle_age_seconds > timeframe_seconds * 2:
+                        raise ValueError("Latest closed candle is stale or has a future timestamp")
                     prior = last_decision.get(key, {})
                     if prior.get("candle_timestamp_ms") == candle_timestamp_ms:
                         continue
