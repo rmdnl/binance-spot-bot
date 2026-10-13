@@ -142,7 +142,7 @@ def test_autonomous_candidate_opens_only_a_simulated_paper_deal(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
-    cfg = config(start_condition="autonomous", symbols=["BTC/USDT"])
+    cfg = config(start_condition="autonomous", symbols=["BTC/USDT"], rsi_max_entry=65, adx_min=12)
     session.add(StrategyRecord(name=cfg.name, config_json=cfg.model_dump_json(), enabled=True))
     session.commit()
 
@@ -209,3 +209,26 @@ def test_autonomous_scanner_rejects_stale_closed_candles(monkeypatch):
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_configured_rsi_max_entry_blocks_overheated_market():
+    cfg = config(rsi_max_entry=40, adx_min=0)
+    closes = [100 + index * 0.5 for index in range(100)]
+
+    result = analyze_market("BTC/USDT", "1h", candles_from_closes(closes), cfg)
+
+    assert result.action == "wait"
+    assert "configured maximum" in result.reason
+    assert result.indicators.rsi > cfg.rsi_max_entry
+
+
+def test_configured_adx_minimum_blocks_weak_market():
+    cfg = config(rsi_max_entry=65, adx_min=20)
+    closes = [100.0] * 100
+
+    result = analyze_market("BTC/USDT", "1h", candles_from_closes(closes), cfg)
+
+    assert result.action == "wait"
+    assert "ADX is below the configured minimum" in result.reason
+    assert result.indicators.adx < cfg.adx_min
