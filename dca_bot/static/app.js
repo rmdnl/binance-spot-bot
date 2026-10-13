@@ -36,9 +36,10 @@ document.addEventListener('DOMContentLoaded', () => {
       capital = base;
       for (let i = 0; i < count; i += 1) {
         cumulativeDeviation += num('initial_deviation_pct', 1) * Math.max(1, num('deviation_scale', 1.5)) ** i;
+        const volumeOffset = field('dca_mode')?.value === 'order_averaging' ? 1 : 0;
         const orderPrice = referencePrice * (1 - cumulativeDeviation / 100);
         if (orderPrice <= 0) { capital = Number.POSITIVE_INFINITY; break; }
-        capital += num('safety_order_base_quantity', 0.001) * scale ** i * orderPrice;
+        capital += num('safety_order_base_quantity', 0.001) * scale ** (i + volumeOffset) * orderPrice;
       }
     }
     const net = num('take_profit_pct', 1) - 2 * num('fee_rate_pct_per_side', .1) - 2 * num('slippage_pct_per_side', .05);
