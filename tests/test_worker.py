@@ -393,3 +393,72 @@ def test_autonomous_scan_rolls_back_partial_deal_when_entry_audit_fails(monkeypa
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_automatic_scanner_starts_highest_scoring_signal_first(monkeypatch):
+    engine, session = _session()
+    try:
+        config = _config().model_copy(update={
+            "start_condition": "autonomous",
+            "entry_filter": "none",
+            "pair_selection_mode": "automatic_usdt",
+            "max_active_deals": 1,
+        })
+        strategy = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=True,
+        )
+        session.add(strategy)
+        session.commit()
+
+        current_hour_ms = (int(time.time() * 1000) // 3_600_000) * 3_600_000
+        candles = [
+            [current_hour_ms - (300 - index) * 3_600_000, 100, 101, 99, 100, 1000]
+            for index in range(301)
+        ]
+
+        class FakeMarketData:
+            requested_symbols = []
+
+            def discover_usdt_symbols(self, **kwargs):
+                # Deliberately return lower-scoring ETH first to prove ranking is signal-led.
+                return ["ETH/USDT", "BTC/USDT"]
+
+            def candles(self, symbol, timeframe, limit):
+                self.requested_symbols.append(symbol)
+                return candles
+
+        fake_market = FakeMarketData()
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", lambda: fake_market)
+
+        def fake_analyze(symbol, timeframe, rows, cfg):
+            score = 80 if symbol == "ETH/USDT" else 95
+            return SimpleNamespace(
+                action="candidate",
+                reason="test candidate",
+                score=score,
+                indicators=SimpleNamespace(
+                    close=100, ema_fast=100, ema_slow=99, rsi=35, atr_pct=1.2, adx=25
+                ),
+                parameters={
+                    "estimated_deal_capital_quote": 50,
+                    "capital_safe": True,
+                    "initial_deviation_pct": 1.0,
+                    "deviation_scale": 1.2,
+                    "take_profit_pct": 1.0,
+                    "max_safety_orders": 2,
+                    "safety_order_volume_scale": 1.2,
+                },
+            )
+
+        monkeypatch.setattr(worker, "analyze_market", fake_analyze)
+        result = worker.scan_autonomous_strategies(session)
+
+        assert [item["symbol"] for item in result["started"]] == ["BTC/USDT"]
+        assert sorted(fake_market.requested_symbols) == ["BTC/USDT", "ETH/USDT"]
+        assert session.query(PaperDealRecord).filter_by(status="active").count() == 1
+    finally:
+        session.close()
+        engine.dispose()
