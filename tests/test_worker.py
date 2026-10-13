@@ -793,8 +793,66 @@ def test_autonomous_scan_rolls_back_deal_and_audit_when_final_commit_fails(monke
             )
         ).count() == 0
         assert verification.get(models.StrategyRiskState, strategy_id) is None
+        assert verification.query(models.AutonomousScanCheckpoint).count() == 0
+        assert verification.get(models.AutonomousHistoryState, 1) is None
     finally:
         if verification is not None:
             verification.close()
+        session.close()
+        engine.dispose()
+
+
+def test_autonomous_history_bootstraps_once_then_reads_compact_checkpoints(monkeypatch):
+    engine, session = _session()
+    try:
+        strategy, _, _ = _persist_active_deal(session)
+        decision = {
+            "strategy_id": strategy.id,
+            "symbol": "BTC/USDT",
+            "candle_timestamp_ms": 123456789,
+            "action": "wait",
+        }
+        session.add_all([
+            models.AuditEvent(
+                event_type="autonomous_decision",
+                detail=__import__("json").dumps(decision),
+            ),
+            models.AuditEvent(
+                event_type="autonomous_entry_started",
+                detail=__import__("json").dumps({
+                    "strategy_id": strategy.id,
+                    "symbol": "BTC/USDT",
+                    "started_at_epoch": 1234.5,
+                }),
+            ),
+        ])
+        session.commit()
+
+        first_decisions, first_entries = worker._load_autonomous_history(session)
+        key = (strategy.id, "BTC/USDT")
+        assert first_decisions[key]["candle_timestamp_ms"] == 123456789
+        assert first_entries[key] == 1234.5
+        assert session.get(models.AutonomousHistoryState, 1) is not None
+        assert session.query(models.AutonomousScanCheckpoint).count() == 1
+        session.commit()
+
+        def unexpected_legacy_read(_session):
+            raise AssertionError("legacy audit history should only be read during bootstrap")
+
+        monkeypatch.setattr(worker, "_read_autonomous_history_from_audit", unexpected_legacy_read)
+        for index in range(1005):
+            session.add(models.AuditEvent(
+                event_type="unrelated_event",
+                detail=__import__("json").dumps({"index": index}),
+            ))
+        session.commit()
+
+        decisions, entries = worker._load_autonomous_history(session)
+        assert decisions == first_decisions
+        assert entries == first_entries
+        assert session.query(models.AuditEvent).filter_by(
+            event_type="unrelated_event"
+        ).count() == 1005
+    finally:
         session.close()
         engine.dispose()
