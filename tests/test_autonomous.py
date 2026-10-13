@@ -120,7 +120,7 @@ def test_enabled_autonomous_profile_scans_closed_candle_without_real_orders(monk
     # second scan reports the existing deal without evaluating/logging again.
     assert second["started"] == []
     assert second["failures"] == []
-    assert second["waited"][0]["reason"] == "pair already has an active deal"
+    assert second["waited"][0]["reason"] == "active deal limit"
     events = session.query(AuditEvent).filter_by(event_type="autonomous_decision").all()
     assert len(events) == 1
     detail = json.loads(events[0].detail)
