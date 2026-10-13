@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import time
+from math import isfinite
 from typing import Any
 
 import ccxt
@@ -25,6 +26,8 @@ class BinanceSpotMarketData:
             "enableRateLimit": True,
             "options": {"defaultType": "spot"},
         })
+        self._discovery_ticker_snapshot: dict[str, Any] | None = None
+        self._discovery_ticker_snapshot_at = 0.0
 
     @staticmethod
     def normalize_symbol(symbol: str) -> str:
@@ -94,12 +97,28 @@ class BinanceSpotMarketData:
         credentials or submit orders. Missing/stale tickers and leveraged tokens
         are rejected rather than guessed into the candidate universe.
         """
-        if min_quote_volume_24h < 0 or max_spread_pct <= 0 or not 1 <= limit <= 100:
+        if (
+            not isfinite(min_quote_volume_24h)
+            or not isfinite(max_spread_pct)
+            or min_quote_volume_24h < 0
+            or max_spread_pct <= 0
+            or not 1 <= limit <= 100
+        ):
             raise ValueError("Invalid automatic pair discovery limits")
         markets = self.exchange.load_markets()
-        tickers = self.exchange.fetch_tickers()
-        if not isinstance(tickers, dict):
-            raise ValueError("Exchange returned invalid bulk ticker data")
+        # A bulk 24h ticker request can be expensive on Binance. Reuse the same
+        # public snapshot across profiles within a scan while enforcing a short TTL.
+        now_monotonic = time.monotonic()
+        if (
+            self._discovery_ticker_snapshot is None
+            or now_monotonic - self._discovery_ticker_snapshot_at > 15
+        ):
+            tickers = self.exchange.fetch_tickers()
+            if not isinstance(tickers, dict):
+                raise ValueError("Exchange returned invalid bulk ticker data")
+            self._discovery_ticker_snapshot = tickers
+            self._discovery_ticker_snapshot_at = now_monotonic
+        tickers = self._discovery_ticker_snapshot
         now_ms = int(time.time() * 1000)
         ranked: list[tuple[float, str]] = []
         leveraged_suffixes = ("UP", "DOWN", "BULL", "BEAR", "2L", "2S", "3L", "3S", "5L", "5S")
