@@ -29,7 +29,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const so = num('safety_order_quote', 10);
     const count = Math.max(0, Math.min(20, Math.floor(num('max_safety_orders', 4))));
     const scale = Math.max(1, num('safety_order_volume_scale', 1.5));
-    const capital = base + Array.from({length: count}, (_, i) => so * scale ** i).reduce((a, b) => a + b, 0);
+    let capital = base + Array.from({length: count}, (_, i) => so * scale ** i).reduce((a, b) => a + b, 0);
+    const referencePrice = num('reference_price', 0);
+    if (field('averaging_method')?.value === 'fixed_coin_amount' && referencePrice > 0) {
+      let cumulativeDeviation = 0;
+      capital = base;
+      for (let i = 0; i < count; i += 1) {
+        cumulativeDeviation += num('initial_deviation_pct', 1) * Math.max(1, num('deviation_scale', 1.5)) ** i;
+        const orderPrice = referencePrice * (1 - cumulativeDeviation / 100);
+        if (orderPrice <= 0) { capital = Number.POSITIVE_INFINITY; break; }
+        capital += num('safety_order_base_quantity', 0.001) * scale ** i * orderPrice;
+      }
+    }
     const net = num('take_profit_pct', 1) - 2 * num('fee_rate_pct_per_side', .1) - 2 * num('slippage_pct_per_side', .05);
     document.getElementById('estimate').textContent = `${capital.toLocaleString(undefined, {maximumFractionDigits: 2})} USDT`;
     const netNode = document.getElementById('net-tp');
