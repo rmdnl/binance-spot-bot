@@ -103,7 +103,7 @@ def build_dca_summary(
     q = D("0.00000001")
     return DcaSummary(
         base_price=price0,
-        base_order_quote=base_quote,
+        base_quote_amount=base_quote,
         base_quantity=base_qty,
         safety_orders=tuple(levels),
         total_quote_required=quote_total.quantize(q, rounding=ROUND_HALF_UP),
