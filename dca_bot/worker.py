@@ -43,6 +43,11 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
             savepoint = session.begin_nested()
             try:
                 deal = deserialize_paper_deal(row.state_json)
+                if row.status != deal.status:
+                    raise ValueError(
+                        f"Persisted paper deal status mismatch for {row.id}; "
+                        "manual reconciliation is required"
+                    )
                 if deal.symbol not in prices:
                     prices[deal.symbol] = exchange.ticker(deal.symbol).last
                 events = update_paper_deal(deal, prices[deal.symbol])
