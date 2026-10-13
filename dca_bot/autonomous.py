@@ -176,20 +176,23 @@ def analyze_market(
     # but a bearish trend alone must not disable averaging-down behavior.
     # Once a deal starts, safety orders are controlled by the DCA price ladder,
     # not by repeatedly re-running these entry indicators.
-    pullback_ok = indicators.rsi <= 65.0
+    pullback_ok = indicators.rsi <= config.rsi_max_entry
+    trend_strength_ok = indicators.adx >= config.adx_min
     score = 0
     score += 25 if pullback_ok else 0
     score += 20 if indicators.atr_pct <= 5.0 else 0
     score += 15 if trend_up else 0
     score += 10 if indicators.close >= indicators.ema_fast else 0
-    score += 10 if indicators.adx >= 12.0 else 0
+    score += 10 if trend_strength_ok else 0
 
     if indicators.atr_pct > 8.0:
         action, reason = "wait", "Extreme volatility exceeds the autonomous entry safety threshold"
     elif indicators.atr_pct > 5.0:
         action, reason = "wait", "Volatility is too high to safely start a new DCA deal"
     elif not pullback_ok:
-        action, reason = "wait", "Market is overheated; waiting for a pullback before starting a DCA deal"
+        action, reason = "wait", "RSI exceeds the configured maximum for entry; waiting for a pullback"
+    elif not trend_strength_ok:
+        action, reason = "wait", "ADX is below the configured minimum for entry"
     else:
         action, reason = "candidate", "DCA-first entry accepted; downside safety orders will average the position by price levels (paper only)"
 
