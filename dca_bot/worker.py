@@ -44,7 +44,7 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
             savepoint = session.begin_nested()
             try:
                 deal = deserialize_paper_deal(row.state_json)
-                if row.status != deal.status or row.symbol != deal.symbol:
+                if row.id != deal.id or row.status != deal.status or row.symbol != deal.symbol:
                     raise ValueError(
                         f"Persisted paper deal status mismatch or symbol mismatch for {row.id}; "
                         "manual reconciliation is required"
