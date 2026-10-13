@@ -312,6 +312,13 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
         for profile in profiles:
             try:
                 config = StrategyConfig.model_validate_json(profile.config_json)
+                if config.order_size_mode != "fixed_quote":
+                    result["waited"].append({
+                        "strategy_id": profile.id,
+                        "symbol": "*",
+                        "reason": "Balance-percentage sizing is not implemented in paper mode; use fixed_quote",
+                    })
+                    continue
                 risk_status = strategy_risk_status(session, profile)
             except Exception as exc:
                 result["failures"].append({"strategy_id": profile.id, "error": "Risk evaluation failed; entries blocked"})
@@ -458,6 +465,7 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                                 else:
                                     adaptive_config = config.model_copy(update={
                                         "symbols": [symbol],
+                                        "order_size_mode": "fixed_quote",
                                         "start_condition": "immediately",
                                         "entry_filter": "none",
                                         "initial_deviation_pct": float(params["initial_deviation_pct"]),
