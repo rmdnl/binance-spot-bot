@@ -180,3 +180,31 @@ def strategy_risk_status(session: Session, strategy_record, now: datetime | None
         "daily_realized_pnl_quote": str(realized_today),
         "daily_loss_tripped": daily_loss_tripped,
     }
+
+
+def global_capital_status(session: Session, limit_quote: Decimal) -> dict[str, str]:
+    """Report account-wide reserved capital across all active paper deals.
+
+    Each active deal reserves its strategy's full max_capital_per_deal, not just
+    quote already spent, so future safety orders cannot overcommit the shared cap.
+    """
+    from .models import PaperDealRecord
+    from .paper_engine import deserialize_paper_deal
+
+    if not limit_quote.is_finite() or limit_quote <= 0:
+        raise ValueError("Global capital limit must be a positive finite amount")
+    rows = session.query(PaperDealRecord).filter_by(status="active").all()
+    deals = []
+    for row in rows:
+        deal = deserialize_paper_deal(row.state_json)
+        if row.status != deal.status or deal.status != "active":
+            raise ValueError("Persisted active deal state is inconsistent; global capital check failed closed")
+        deals.append(deal)
+    reserved = reserved_capital_quote(deals)
+    remaining = limit_quote - reserved
+    return {
+        "limit_quote": str(limit_quote),
+        "reserved_quote": str(reserved),
+        "remaining_quote": str(remaining),
+        "within_limit": str(reserved <= limit_quote).lower(),
+    }
