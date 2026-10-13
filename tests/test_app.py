@@ -131,3 +131,31 @@ def test_automatic_fixed_quote_profile_can_use_adaptive_ladder_within_cap():
     # analyzer can reduce safety-order count per candidate before opening.
     assert required is None
     assert total_capacity == 600
+
+
+def test_global_capital_status_reports_account_wide_budget(monkeypatch):
+    from decimal import Decimal
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from dca_bot.db import Base
+    from dca_bot.models import PaperDealRecord, StrategyRecord
+    from dca_bot.paper_engine import start_paper_deal, serialize_paper_deal
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    try:
+        config = StrategyConfig(max_capital_per_deal=100, max_total_allocation=300)
+        strategy = StrategyRecord(name=config.name, config_json=config.model_dump_json(), enabled=False)
+        session.add(strategy)
+        session.flush()
+        deal = start_paper_deal(config, "BTC/USDT", Decimal("100"))
+        session.add(PaperDealRecord(id=deal.id, strategy_id=strategy.id, symbol=deal.symbol,
+            status=deal.status, state_json=serialize_paper_deal(deal)))
+        session.commit()
+        from dca_bot.risk import global_capital_status
+        status = global_capital_status(session, Decimal("250"))
+        assert status == {"limit_quote": "250", "reserved_quote": "100", "remaining_quote": "150", "within_limit": "true"}
+    finally:
+        session.close()
+        engine.dispose()
