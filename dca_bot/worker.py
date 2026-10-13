@@ -96,6 +96,16 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
                     "symbol": row.symbol,
                     "error": "Market update or state processing failed",
                 })
+        for strategy_record in session.query(StrategyRecord).all():
+            try:
+                strategy_risk_status(session, strategy_record)
+            except Exception as exc:
+                logger.warning("Paper risk evaluation failed for strategy %s: %s", strategy_record.id, exc)
+                failures.append({
+                    "strategy_id": str(strategy_record.id),
+                    "symbol": "*",
+                    "error": "Risk evaluation failed; new entries must remain blocked",
+                })
         session.commit()
         return {"updated": updated, "failures": failures}
     except Exception:
