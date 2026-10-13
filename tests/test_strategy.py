@@ -1,7 +1,9 @@
+from __future__ import annotations
 from decimal import Decimal
-import pytest
-from dca_bot.strategy import StrategyConfig
+from fastapi.testclient import TestClient
+from dca_bot.main import app
 from dca_bot.risk import estimate_capital, estimated_net_profit_pct, validate_budget
+from dca_bot.strategy import StrategyConfig
 
 
 def test_strategy_defaults_to_disabled_spot_preset():
@@ -12,18 +14,25 @@ def test_strategy_defaults_to_disabled_spot_preset():
 
 
 def test_symbol_normalization():
-    config = StrategyConfig(symbols=['btcusdt', 'ETH/USDT'])
-    assert config.symbols == ['BTC/USDT', 'ETH/USDT']
+    assert StrategyConfig(symbols=['btcusdt', 'ETH/USDT']).symbols == ['BTC/USDT', 'ETH/USDT']
 
 
 def test_duplicate_symbols_rejected():
-    with pytest.raises(ValueError, match='Duplicate'):
+    try:
         StrategyConfig(symbols=['BTCUSDT', 'BTC/USDT'])
+    except ValueError as exc:
+        assert 'Duplicate' in str(exc)
+    else:
+        raise AssertionError('Duplicate symbol was accepted')
 
 
 def test_unsafe_ema_order_rejected():
-    with pytest.raises(ValueError, match='EMA fast'):
+    try:
         StrategyConfig(ema_fast=200, ema_slow=50)
+    except ValueError as exc:
+        assert 'EMA fast' in str(exc)
+    else:
+        raise AssertionError('Unsafe EMA configuration was accepted')
 
 
 def test_estimated_capital_geometric_safety_orders():
@@ -33,20 +42,44 @@ def test_estimated_capital_geometric_safety_orders():
 
 
 def test_zero_safety_orders():
-    result = estimate_capital(Decimal('10'), Decimal('10'), 0, Decimal('1.5'))
-    assert result.total == Decimal('10')
+    assert estimate_capital(Decimal('10'), Decimal('10'), 0, Decimal('1.5')).total == Decimal('10')
 
 
 def test_net_profit_estimate_accounts_for_both_sides():
-    result = estimated_net_profit_pct(Decimal('1'), Decimal('0.1'), Decimal('0.05'))
-    assert result == Decimal('0.70')
+    assert estimated_net_profit_pct(Decimal('1'), Decimal('0.1'), Decimal('0.05')) == Decimal('0.70')
 
 
 def test_budget_rejects_undersized_deal_cap():
-    with pytest.raises(ValueError, match='exceeds per-deal cap'):
+    try:
         validate_budget(Decimal('100'), Decimal('90'), Decimal('300'), 2)
+    except ValueError as exc:
+        assert 'exceeds per-deal cap' in str(exc)
+    else:
+        raise AssertionError('Undersized deal cap was accepted')
 
 
 def test_budget_rejects_total_overallocation():
-    with pytest.raises(ValueError, match='total allocation'):
+    try:
         validate_budget(Decimal('100'), Decimal('100'), Decimal('150'), 2)
+    except ValueError as exc:
+        assert 'total allocation' in str(exc)
+    else:
+        raise AssertionError('Overallocated strategy was accepted')
+
+
+def test_health_reports_execution_disabled():
+    response = TestClient(app).get('/healthz')
+    assert response.status_code == 200
+    assert response.json()['execution'] == 'disabled'
+
+
+def test_dashboard_redirects_to_login_without_session():
+    response = TestClient(app).get('/', follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers['location'] == '/login'
+
+
+def test_login_page_does_not_expose_dashboard():
+    response = TestClient(app).get('/login')
+    assert response.status_code == 200
+    assert 'Dashboard password' in response.text
