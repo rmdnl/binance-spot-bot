@@ -10,12 +10,8 @@ if [[ "${EUID}" -eq 0 ]]; then
 fi
 
 cd "${APP_DIR}"
-"${PYTHON}" -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/pip install -e '.[dev]'
-mkdir -p data logs
-chmod 700 data logs
 
+# Handle secrets before installing dependencies or creating runtime artifacts.
 if [[ -L .env ]]; then
   echo ".env must be a regular file, not a symlink." >&2
   exit 1
@@ -25,10 +21,14 @@ if [[ ! -f .env ]]; then
   cp .env.example .env
   echo "Created .env from the safe template. Set APP_SECRET_KEY and ADMIN_PASSWORD_HASH before running in production." >&2
 fi
-
-# Existing .env files may have been created manually with permissive modes.
-# Always enforce owner-only access before installing dependencies or starting the app.
 chmod 600 .env
+
+"${PYTHON}" -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/pip install -e '.[dev]'
+mkdir -p data logs
+chmod 700 data logs
+
 
 .venv/bin/python -m compileall -q dca_bot
 .venv/bin/pytest
