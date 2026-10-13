@@ -131,3 +131,78 @@ def test_automatic_fixed_quote_profile_can_use_adaptive_ladder_within_cap():
     # analyzer can reduce safety-order count per candidate before opening.
     assert required is None
     assert total_capacity == 600
+
+
+
+def test_manual_entry_fails_closed_when_minimum_order_preflight_rejects(monkeypatch):
+    from decimal import Decimal as D
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from starlette.requests import Request
+
+    from dca_bot.db import Base
+    from dca_bot.models import PaperDealRecord, StrategyRecord
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    try:
+        config = StrategyConfig(
+            name="minimum-order-guard",
+            symbols=["BTC/USDT"],
+            base_order_quote=10,
+            safety_order_quote=10,
+            max_safety_orders=2,
+            max_capital_per_deal=100,
+            max_total_allocation=100,
+            max_active_deals=1,
+            start_condition="manual",
+            entry_filter="manual",
+        )
+        strategy = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=False,
+        )
+        session.add(strategy)
+        session.commit()
+
+        class RejectingMarketData:
+            normalize_symbol = staticmethod(main.BinanceSpotMarketData.normalize_symbol)
+
+            def ticker(self, symbol):
+                return SimpleNamespace(last=D("100"))
+
+            def validate_minimum_order_sizes(self, symbol, observed_config, price):
+                raise ValueError("minimum order size rejected")
+
+        monkeypatch.setattr(main, "ensure_authenticated", lambda request: None)
+        monkeypatch.setattr(main, "check_csrf", lambda request, token: None)
+        monkeypatch.setattr(main, "strategy_risk_status", lambda db, record: {"blocked": False})
+        monkeypatch.setattr(main, "BinanceSpotMarketData", RejectingMarketData)
+
+        request = Request({
+            "type": "http",
+            "method": "POST",
+            "path": "/api/paper/deals/start",
+            "headers": [],
+            "query_string": b"",
+        })
+        with pytest.raises(HTTPException) as exc:
+            main.paper_deal_start(
+                request,
+                csrf="test-token",
+                strategy_id=strategy.id,
+                symbol="BTCUSDT",
+                db=session,
+            )
+
+        assert exc.value.status_code == 422
+        assert "minimum order size rejected" in str(exc.value.detail)
+        assert session.query(PaperDealRecord).count() == 0
+    finally:
+        session.close()
+        engine.dispose()
