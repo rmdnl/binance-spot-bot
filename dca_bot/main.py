@@ -26,7 +26,7 @@ from .autonomous import analyze_market
 from decimal import Decimal as D
 from .worker import run_paper_worker, tick_active_paper_deals
 from .entry_guard import serialized_entry
-from .risk import reserved_capital_quote, strategy_risk_status
+from .risk import global_capital_status, reserved_capital_quote, strategy_risk_status
 from .paper_engine import (
     deserialize_paper_deal,
     estimate_unrealized_pnl_quote,
@@ -342,6 +342,11 @@ def paper_deal_start(
             raise ValueError(
                 "Total allocation cap would be exceeded by active and new deal reservations"
             )
+        global_status = global_capital_status(db, D(str(settings.global_capital_limit_quote)))
+        if D(global_status["reserved_quote"]) + new_reservation > D(global_status["limit_quote"]):
+            raise ValueError(
+                "Global capital limit would be exceeded by active and new deal reservations across all strategies"
+            )
         ticker = BinanceSpotMarketData().ticker(normalized)
         deal = start_paper_deal(config, normalized, ticker.last)
     except HTTPException:
@@ -392,11 +397,19 @@ def paper_risk_status(request: Request, db: Session = Depends(get_db)):
                 "daily_loss_tripped": None,
             })
     try:
+        shared_capital = global_capital_status(db, D(str(settings.global_capital_limit_quote)))
         db.commit()
     except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=503, detail="Risk status could not be persisted") from exc
+        raise HTTPException(status_code=503, detail="Risk status or global capital reservation could not be evaluated") from exc
     return {
+        "global_capital": {
+            "limit_quote": shared_capital["limit_quote"],
+            "reserved_quote": shared_capital["reserved_quote"],
+            "remaining_quote": shared_capital["remaining_quote"],
+            "within_limit": shared_capital["within_limit"] == "true",
+            "quote_asset": "USDT",
+        },
         "risk_model": "virtual_paper_equity",
         "mark_source": "last persisted paper-deal price",
         "daily_loss_timezone": "UTC",
