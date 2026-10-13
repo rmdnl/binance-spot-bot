@@ -128,6 +128,27 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
 
 
 @serialized_entry
+def _fresh_closed_candles(exchange: BinanceSpotMarketData, symbol: str, config: StrategyConfig, now: float) -> tuple[list[list[float]], int]:
+    """Load enough Spot OHLCV and validate the latest closed candle before analysis."""
+    limit = min(1000, max(config.ema_slow + 50, config.atr_period * 3 + 10, 300))
+    candles = exchange.candles(symbol, config.timeframe, limit=limit)
+    if len(candles) < 2:
+        raise ValueError("Not enough closed Spot candles")
+    closed_candles = candles[:-1]  # Never decide on the still-forming candle.
+    candle_timestamp_ms = int(closed_candles[-1][0])
+    timeframe_seconds = {
+        "1m": 60, "3m": 180, "5m": 300, "15m": 900,
+        "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400,
+        "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400,
+    }.get(config.timeframe)
+    if timeframe_seconds is None:
+        raise ValueError("Unsupported timeframe for candle freshness validation")
+    candle_age_seconds = now - (candle_timestamp_ms / 1000)
+    if candle_age_seconds < -60 or candle_age_seconds > timeframe_seconds * 2:
+        raise ValueError("Latest closed candle is stale or has a future timestamp")
+    return closed_candles, candle_timestamp_ms
+
+
 def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
     """Evaluate enabled autonomous profiles and open paper deals only on a fresh closed candle."""
     owns_session = db is None
@@ -213,6 +234,35 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
             else:
                 symbols_to_scan = config.symbols
 
+            # Analyze the bounded automatic candidate set once, then evaluate the
+            # strongest strategy signals first instead of opening deals by volume rank.
+            prefetched: dict[str, tuple[list[list[float]], int, Any]] = {}
+            prefetch_failures: dict[str, str] = {}
+            if config.pair_selection_mode == "automatic_usdt":
+                for candidate_symbol in symbols_to_scan:
+                    try:
+                        closed, candle_timestamp = _fresh_closed_candles(
+                            exchange, candidate_symbol, config, now
+                        )
+                        candidate_decision = analyze_market(
+                            candidate_symbol, config.timeframe, closed, config
+                        )
+                        prefetched[candidate_symbol] = (
+                            closed, candle_timestamp, candidate_decision
+                        )
+                    except Exception as exc:
+                        prefetch_failures[candidate_symbol] = str(exc)
+                symbols_to_scan = sorted(
+                    symbols_to_scan,
+                    key=lambda candidate_symbol: (
+                        candidate_symbol in prefetched
+                        and prefetched[candidate_symbol][2].action == "candidate",
+                        prefetched[candidate_symbol][2].score
+                        if candidate_symbol in prefetched else -1,
+                    ),
+                    reverse=True,
+                )
+
             for symbol in symbols_to_scan:
                 key = (profile.id, symbol)
                 started_count = len(result["started"])
@@ -245,27 +295,21 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                             result["waited"].append({"strategy_id": profile.id, "symbol": symbol, "reason": "pair already has an active deal"})
                             continue
 
-                        limit = min(1000, max(config.ema_slow + 50, config.atr_period * 3 + 10, 300))
-                        candles = exchange.candles(symbol, config.timeframe, limit=limit)
-                        if len(candles) < 2:
-                            raise ValueError("Not enough closed Spot candles")
-                        closed_candles = candles[:-1]  # Do not make a decision on the still-forming candle.
-                        candle_timestamp_ms = int(closed_candles[-1][0])
-                        timeframe_seconds = {
-                            "1m": 60, "3m": 180, "5m": 300, "15m": 900,
-                            "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400,
-                            "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400,
-                        }.get(config.timeframe)
-                        if timeframe_seconds is None:
-                            raise ValueError("Unsupported timeframe for candle freshness validation")
-                        candle_age_seconds = now - (candle_timestamp_ms / 1000)
-                        if candle_age_seconds < -60 or candle_age_seconds > timeframe_seconds * 2:
-                            raise ValueError("Latest closed candle is stale or has a future timestamp")
+                        if config.pair_selection_mode == "automatic_usdt":
+                            if symbol in prefetch_failures:
+                                raise ValueError("Automatic candidate analysis failed freshness or market-data checks")
+                            closed_candles, candle_timestamp_ms, decision = prefetched[symbol]
+                        else:
+                            closed_candles, candle_timestamp_ms = _fresh_closed_candles(
+                                exchange, symbol, config, now
+                            )
+                            decision = None
                         prior = last_decision.get(key, {})
                         if prior.get("candle_timestamp_ms") == candle_timestamp_ms:
                             continue
 
-                        decision = analyze_market(symbol, config.timeframe, closed_candles, config)
+                        if decision is None:
+                            decision = analyze_market(symbol, config.timeframe, closed_candles, config)
                         action = decision.action
                         reason = decision.reason
                         params = decision.parameters
