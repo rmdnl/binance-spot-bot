@@ -112,8 +112,10 @@ class BinanceSpotMarketData:
         cost_limits = limits.get("cost") or {}
         min_amount_raw = amount_limits.get("min")
         min_cost_raw = cost_limits.get("min")
-        min_amount = Decimal(str(min_amount_raw)) if min_amount_raw is not None else Decimal("0")
-        min_cost = Decimal(str(min_cost_raw)) if min_cost_raw is not None else Decimal("0")
+        if min_amount_raw is None or min_cost_raw is None:
+            raise ValueError(f"{normalized} minimum-order metadata is unavailable; entry blocked")
+        min_amount = Decimal(str(min_amount_raw))
+        min_cost = Decimal(str(min_cost_raw))
         if (not min_amount.is_finite() or min_amount < 0
                 or not min_cost.is_finite() or min_cost < 0):
             raise ValueError(f"{normalized} has invalid Binance minimum-order metadata")
