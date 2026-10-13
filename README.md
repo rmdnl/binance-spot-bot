@@ -39,7 +39,7 @@ Target dashboard address: `http://127.0.0.1:8082` when accessed locally. For rem
 
 ## Development status
 
-The initial project scaffold is being built. The repository README is not a statement that live trading is ready. See the tests, configuration, and deployment docs as they are added.
+The current scaffold includes a responsive dashboard, password login, editable strategy profiles, SQLite persistence, initial risk validation helpers, a password-hash setup utility, VPS deployment notes, and GitHub Actions CI. Automated checks have passed during development. The dashboard does not place exchange orders yet, and market data, paper deal simulation, Binance Testnet execution, reconciliation, and live trading remain future work. Consult [DEPLOYMENT.md](DEPLOYMENT.md) before installing.
 
 ## License
 
