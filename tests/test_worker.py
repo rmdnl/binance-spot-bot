@@ -116,3 +116,34 @@ def test_worker_keeps_persisted_state_unchanged_when_market_price_fetch_fails(mo
     finally:
         session.close()
         engine.dispose()
+
+
+def test_autonomous_scanner_does_not_open_deal_when_candle_feed_fails(monkeypatch):
+    engine, session = _session()
+    try:
+        config = _config().model_copy(update={
+            "start_condition": "autonomous",
+            "entry_filter": "none",
+        })
+        strategy = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=True,
+        )
+        session.add(strategy)
+        session.commit()
+
+        class FailingMarketData:
+            def candles(self, symbol, timeframe, limit):
+                raise TimeoutError("simulated candle feed timeout")
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", FailingMarketData)
+        result = worker.scan_autonomous_strategies(session)
+
+        assert result["started"] == []
+        assert len(result["failures"]) == 1
+        assert result["failures"][0]["strategy_id"] == strategy.id
+        assert session.query(PaperDealRecord).count() == 0
+    finally:
+        session.close()
+        engine.dispose()
