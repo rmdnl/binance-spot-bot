@@ -26,6 +26,7 @@ from decimal import Decimal as D
 from .worker import run_paper_worker, tick_active_paper_deals
 from .paper_engine import (
     deserialize_paper_deal,
+    estimate_unrealized_pnl_quote,
     serialize_paper_deal,
     start_paper_deal,
     update_paper_deal,
@@ -247,10 +248,8 @@ def paper_deals(request: Request, db: Session = Depends(get_db)):
             continue
         snapshot = deal.snapshot()
         if deal.status == "active":
-            proceeds = deal.base_quantity * deal.last_price
-            exit_fee = proceeds * D(str(deal.config.fee_rate_pct_per_side)) / D("100")
             snapshot["unrealized_pnl_quote"] = str(
-                proceeds - deal.quote_spent - deal.entry_fees_quote - exit_fee
+                estimate_unrealized_pnl_quote(deal)
             )
         else:
             snapshot["unrealized_pnl_quote"] = "0"
