@@ -187,6 +187,23 @@ def estimate_unrealized_pnl_quote(deal: PaperDeal, price: Decimal | str | float 
     )
 
 
+def _stop_price_for_deal(deal: PaperDeal, current: Decimal) -> Decimal | None:
+    """Return the active stop threshold, updating breakeven activation state."""
+    avg = deal.average_entry_price
+    stop_price: Decimal | None = None
+    if deal.config.stop_loss_enabled:
+        stop_basis = deal.base_price if deal.config.stop_loss_basis == "base_order" else avg
+        stop_price = stop_basis * (D("1") - D(str(deal.config.stop_loss_pct)) / D("100"))
+    if deal.config.move_stop_to_breakeven_enabled:
+        activation = avg * (D("1") + D(str(deal.config.breakeven_activation_pct)) / D("100"))
+        if current >= activation:
+            deal.breakeven_active = True
+        if deal.breakeven_active:
+            breakeven = avg * (D("1") + D(str(deal.config.breakeven_offset_pct)) / D("100"))
+            stop_price = max(stop_price or breakeven, breakeven)
+    return stop_price
+
+
 def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[PaperEvent]:
     """Advance a paper deal using one observed Spot price. Safe to call repeatedly."""
     current = _positive_price(price)
@@ -198,6 +215,15 @@ def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[Pap
         max_age = deal.config.max_deal_duration_hours * 3600
         if time.time() - deal.started_at_epoch >= max_age:
             return [_close(deal, current, "max_deal_duration")]
+
+    # Evaluate an already-crossed stop before simulating any lower safety-order
+    # fills. Otherwise a price gap through the stop could add exposure after the
+    # strategy should already have exited.
+    deal.highest_price = max(deal.highest_price, current)
+    stop_price = _stop_price_for_deal(deal, current)
+    if stop_price is not None and current <= stop_price:
+        emitted.append(_close(deal, current, "stop_loss_or_breakeven"))
+        return emitted
 
     # Safety orders are limit buys; if price crosses several levels, process them in order.
     while deal.safety_orders_filled < len(deal.safety_levels):
@@ -233,20 +259,11 @@ def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[Pap
         emitted.append(event)
 
     avg = deal.average_entry_price
-    deal.highest_price = max(deal.highest_price, current)
 
-    # Stop loss and breakeven protection are evaluated before take profit.
-    stop_price: Decimal | None = None
-    if deal.config.stop_loss_enabled:
-        stop_basis = deal.base_price if deal.config.stop_loss_basis == "base_order" else avg
-        stop_price = stop_basis * (D("1") - D(str(deal.config.stop_loss_pct)) / D("100"))
-    if deal.config.move_stop_to_breakeven_enabled:
-        activation = avg * (D("1") + D(str(deal.config.breakeven_activation_pct)) / D("100"))
-        if current >= activation:
-            deal.breakeven_active = True
-        if deal.breakeven_active:
-            breakeven = avg * (D("1") + D(str(deal.config.breakeven_offset_pct)) / D("100"))
-            stop_price = max(stop_price or breakeven, breakeven)
+    # Re-check after fills because average-entry-based protection can move as the
+    # DCA position changes. The pre-fill check above prevents fills after a stop
+    # that was already crossed on the way down.
+    stop_price = _stop_price_for_deal(deal, current)
     if stop_price is not None and current <= stop_price:
         emitted.append(_close(deal, current, "stop_loss_or_breakeven"))
         return emitted
