@@ -585,3 +585,47 @@ def test_global_capital_status_fails_closed_when_closed_row_contains_active_deal
     finally:
         session.close()
         engine.dispose()
+
+
+def test_worker_fails_closed_when_persisted_row_symbol_disagrees_with_deal(monkeypatch):
+    engine, session = _session()
+    try:
+        _, row, _ = _persist_active_deal(session)
+        original_state = row.state_json
+        row.symbol = "ETH/USDT"
+        session.commit()
+
+        class MarketDataMustNotBeCalled:
+            def ticker(self, symbol):
+                raise AssertionError("market data must not be fetched for inconsistent persisted state")
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", MarketDataMustNotBeCalled)
+        result = worker.tick_active_paper_deals(session)
+
+        assert result["updated"] == []
+        assert len(result["failures"]) == 1
+        assert "symbol mismatch" in result["failures"][0]["error"]
+        persisted = session.get(PaperDealRecord, row.id)
+        assert persisted.symbol == "ETH/USDT"
+        assert persisted.state_json == original_state
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_risk_and_global_capital_guards_fail_closed_on_persisted_symbol_mismatch():
+    from dca_bot.risk import global_capital_status, strategy_risk_status
+
+    engine, session = _session()
+    try:
+        strategy, row, _ = _persist_active_deal(session)
+        row.symbol = "ETH/USDT"
+        session.commit()
+
+        with pytest.raises(ValueError, match="symbol mismatch"):
+            strategy_risk_status(session, strategy)
+        with pytest.raises(ValueError, match="symbol mismatch"):
+            global_capital_status(session, D("120"))
+    finally:
+        session.close()
+        engine.dispose()
