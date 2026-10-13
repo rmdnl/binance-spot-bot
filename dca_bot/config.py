@@ -23,8 +23,19 @@ class Settings(BaseSettings):
     paper_poll_interval_seconds: int = Field(default=10, ge=3, le=300)
 
     def assert_safe(self) -> None:
+        # Exchange execution is intentionally not implemented. Reject any setting
+        # that could imply a live-capable deployment, regardless of app environment.
+        if self.trading_mode.lower() != 'paper':
+            raise ValueError('Only TRADING_MODE=paper is supported; exchange execution is not implemented')
+        if self.live_trading_enabled:
+            raise ValueError('LIVE_TRADING_ENABLED must remain false until live execution is separately implemented and reviewed')
+
         if self.app_env.lower() == 'production':
-            if len(self.app_secret_key) < 32 or self.app_secret_key == 'development-only-change-this-secret':
+            if (
+                len(self.app_secret_key) < 32
+                or self.app_secret_key == 'development-only-change-this-secret'
+                or self.app_secret_key == 'replace-with-a-long-random-secret'
+            ):
                 raise ValueError('APP_SECRET_KEY must be a unique random secret of at least 32 chars in production')
             if not self.admin_password_hash:
                 raise ValueError('ADMIN_PASSWORD_HASH must be configured in production')
