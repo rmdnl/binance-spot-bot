@@ -6,7 +6,6 @@ document.addEventListener('DOMContentLoaded', () => {
     panels.forEach(panel => panel.classList.toggle('active', panel.dataset.panel === name));
   };
   tabButtons.forEach(button => button.addEventListener('click', () => activateTab(button.dataset.tab)));
-
   document.querySelectorAll('a[href="#risk"]').forEach(link => {
     link.addEventListener('click', () => activateTab('risk'));
   });
@@ -22,6 +21,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const element = field(name);
     if (element && value !== undefined && value !== null) element.value = String(value);
   };
+  const validation = document.getElementById('validation');
+  const previewNode = document.getElementById('ladder-preview');
+
   const recalc = () => {
     const base = num('base_order_quote', 10);
     const so = num('safety_order_quote', 10);
@@ -39,10 +41,102 @@ document.addEventListener('DOMContentLoaded', () => {
     if (num('max_capital_per_deal', 200) * num('max_active_deals', 3) > num('max_total_allocation', 600)) errors.push('Per-deal cap multiplied by active deals exceeds total allocation cap.');
     if (net < num('min_net_profit_pct', .3)) errors.push('Estimated net take profit is below the configured minimum.');
     if (field('trailing_take_profit_enabled')?.value === 'true' && num('trailing_activation_pct', 1) < num('take_profit_pct', 1)) errors.push('Trailing activation must be at least the take-profit target.');
-    const box = document.getElementById('validation');
-    box.className = `validation ${errors.length ? 'error' : 'success'}`;
-    box.textContent = errors.length ? `Review required: ${errors.join(' ')}` : 'Basic checks passed. Exchange filters, available balance, and market conditions must still be checked server-side.';
+    validation.className = `validation ${errors.length ? 'error' : 'success'}`;
+    validation.textContent = errors.length ? `Review required: ${errors.join(' ')}` : 'Basic checks passed. Exchange filters, available balance, and market conditions must still be checked server-side.';
   };
+
+  const makeCell = (tag, text) => {
+    const cell = document.createElement(tag);
+    cell.textContent = text;
+    return cell;
+  };
+  const renderLadder = data => {
+    previewNode.replaceChildren();
+    const title = document.createElement('div');
+    title.className = 'ladder-title';
+    title.textContent = `DCA ladder · deepest order -${Number(data.deepest_deviation_pct).toFixed(2)}%`;
+    previewNode.append(title);
+    const stats = document.createElement('div');
+    stats.className = 'ladder-stats';
+    [
+      ['Total capital', `${Number(data.total_quote_required).toFixed(4)} USDT`],
+      ['Average entry', Number(data.average_entry_price).toPrecision(8)],
+      ['Base quantity', Number(data.total_base_quantity).toPrecision(8)]
+    ].forEach(([label, value]) => {
+      const item = document.createElement('div');
+      item.append(makeCell('span', label), makeCell('b', value));
+      stats.append(item);
+    });
+    previewNode.append(stats);
+    const table = document.createElement('table');
+    table.className = 'ladder-table';
+    const head = document.createElement('thead');
+    const header = document.createElement('tr');
+    ['Order', 'Deviation', 'Limit price', 'Quote size'].forEach(value => header.append(makeCell('th', value)));
+    head.append(header);
+    table.append(head);
+    const body = document.createElement('tbody');
+    const baseRow = document.createElement('tr');
+    ['Base', '0.00%', Number(data.base_price).toPrecision(8), `${Number(data.base_order_quote).toFixed(4)} USDT`].forEach(value => baseRow.append(makeCell('td', value)));
+    body.append(baseRow);
+    data.safety_orders.forEach(order => {
+      const row = document.createElement('tr');
+      [`Safety ${order.index}`, `-${Number(order.deviation_pct).toFixed(2)}%`, Number(order.price).toPrecision(8), `${Number(order.quote_amount).toFixed(4)} USDT`].forEach(value => row.append(makeCell('td', value)));
+      body.append(row);
+    });
+    table.append(body);
+    previewNode.append(table);
+    const note = document.createElement('p');
+    note.className = 'muted tiny';
+    note.textContent = 'Estimate excludes fees, slippage, exchange precision/minimum-notional rules and order fills. No orders were placed.';
+    previewNode.append(note);
+  };
+
+  const refreshLadder = async () => {
+    const price = document.getElementById('reference_price').value.trim();
+    if (!price || Number(price) <= 0) {
+      previewNode.textContent = 'Enter or fetch a reference price to calculate the DCA ladder.';
+      return;
+    }
+    const params = new URLSearchParams({
+      base_price: price,
+      base_order_quote: String(num('base_order_quote', 10)),
+      safety_order_quote: String(num('safety_order_quote', 10)),
+      safety_order_count: String(Math.floor(num('max_safety_orders', 4))),
+      initial_deviation_pct: String(num('initial_deviation_pct', 1)),
+      deviation_scale: String(num('deviation_scale', 1.5)),
+      safety_volume_scale: String(num('safety_order_volume_scale', 1.5))
+    });
+    previewNode.textContent = 'Calculating ladder…';
+    try {
+      const response = await fetch(`/api/dca/preview?${params}`, {headers: {'Accept': 'application/json'}});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Could not calculate ladder');
+      renderLadder(data);
+    } catch (error) {
+      previewNode.textContent = error.message || 'Could not calculate ladder.';
+    }
+  };
+
+  document.getElementById('fetch-price-button').addEventListener('click', async () => {
+    const firstSymbol = document.getElementById('symbols').value.split(',')[0].trim();
+    const button = document.getElementById('fetch-price-button');
+    button.disabled = true;
+    button.textContent = 'Fetching…';
+    try {
+      const response = await fetch(`/api/market/ticker?symbol=${encodeURIComponent(firstSymbol)}`, {headers: {'Accept': 'application/json'}});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Could not fetch Spot price');
+      document.getElementById('reference_price').value = data.last;
+      recalc();
+      await refreshLadder();
+    } catch (error) {
+      previewNode.textContent = error.message || 'Could not fetch Spot price.';
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Fetch Spot price ↻';
+    }
+  });
 
   document.querySelectorAll('[data-edit]').forEach(button => button.addEventListener('click', () => {
     let item;
@@ -67,7 +161,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('strategy-editor').scrollIntoView({behavior:'smooth', block:'start'});
   }));
 
-  document.getElementById('preview-button').addEventListener('click', recalc);
+  document.getElementById('preview-button').addEventListener('click', () => { recalc(); refreshLadder(); });
   form.querySelectorAll('input,select').forEach(input => input.addEventListener('input', recalc));
   form.addEventListener('submit', recalc);
   recalc();
