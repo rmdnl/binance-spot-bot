@@ -1,8 +1,10 @@
+import asyncio
 from decimal import Decimal as D
 from types import SimpleNamespace
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import pytest
 
 from dca_bot import models, worker
 from dca_bot.db import Base
@@ -147,3 +149,25 @@ def test_autonomous_scanner_does_not_open_deal_when_candle_feed_fails(monkeypatc
     finally:
         session.close()
         engine.dispose()
+
+
+@pytest.mark.parametrize("tick_mode", ["raises", "reports_failure"])
+def test_worker_skips_autonomous_scan_when_maintenance_is_unsafe(monkeypatch, tick_mode):
+    stop_event = asyncio.Event()
+    scan_calls = []
+
+    async def fake_to_thread(func, *args, **kwargs):
+        if func is worker.tick_active_paper_deals:
+            stop_event.set()
+            if tick_mode == "raises":
+                raise RuntimeError("simulated database failure")
+            return {"updated": [], "failures": [{"symbol": "BTC/USDT", "error": "price timeout"}]}
+        if func is worker.scan_autonomous_strategies:
+            scan_calls.append(True)
+            return {"started": [], "waited": [], "failures": []}
+        raise AssertionError(f"Unexpected worker callback: {func}")
+
+    monkeypatch.setattr(worker.asyncio, "to_thread", fake_to_thread)
+    asyncio.run(worker.run_paper_worker(stop_event, 3))
+
+    assert scan_calls == []
