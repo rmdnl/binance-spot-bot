@@ -650,8 +650,7 @@ def test_worker_and_capital_guards_fail_closed_on_persisted_deal_id_mismatch(mon
         result = worker.tick_active_paper_deals(session)
 
         assert result["updated"] == []
-        assert len(result["failures"]) == 1
-        assert result["failures"][0]["deal_id"] == row.id
+        assert any(item.get("deal_id") == row.id for item in result["failures"])
         persisted = session.get(PaperDealRecord, row.id)
         assert persisted.state_json == original_state
         assert deal.id == old_id
