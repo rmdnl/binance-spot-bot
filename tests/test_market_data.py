@@ -221,3 +221,22 @@ def test_minimum_order_validation_rejects_quantity_below_market_min_amount():
     )
     with pytest.raises(ValueError, match="below the market minimum amount"):
         adapter.validate_minimum_order_sizes("BTC/USDT", config, Decimal("50000"))
+
+
+
+def test_minimum_order_validation_fails_closed_when_market_minimums_are_missing():
+    from dca_bot.strategy import StrategyConfig
+
+    adapter = BinanceSpotMarketData(FakeExchange(
+        {"BTC/USDT": {"spot": True, "active": True}}, {}
+    ))
+    config = StrategyConfig(
+        symbols=["BTC/USDT"],
+        base_order_quote=10,
+        safety_order_quote=10,
+        max_safety_orders=0,
+        max_capital_per_deal=20,
+        max_total_allocation=20,
+    )
+    with pytest.raises(ValueError, match="minimum-order metadata is unavailable"):
+        adapter.validate_minimum_order_sizes("BTC/USDT", config, Decimal("50000"))
