@@ -158,15 +158,7 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
 
 
 def _close(deal: PaperDeal, price: Decimal, reason: str) -> PaperEvent:
-    proceeds = deal.base_quantity * price
-    exit_fee = proceeds * D(str(deal.config.fee_rate_pct_per_side)) / D("100")
-    slippage_rate = D(str(deal.config.slippage_pct_per_side)) / D("100")
-    entry_slippage = deal.quote_spent * slippage_rate
-    exit_slippage = proceeds * slippage_rate
-    deal.realized_pnl_quote = (
-        proceeds - deal.quote_spent - deal.entry_fees_quote - exit_fee
-        - entry_slippage - exit_slippage
-    )
+    deal.realized_pnl_quote = estimate_unrealized_pnl_quote(deal, price)
     deal.exit_price = price
     deal.close_reason = reason
     deal.status = "closed"
@@ -179,6 +171,20 @@ def _close(deal: PaperDeal, price: Decimal, reason: str) -> PaperEvent:
     )
     deal.events.append(event)
     return event
+
+
+def estimate_unrealized_pnl_quote(deal: PaperDeal, price: Decimal | str | float | None = None) -> Decimal:
+    """Estimate mark-to-market PnL after configured fees and slippage on both sides."""
+    mark_price = _positive_price(deal.last_price if price is None else price)
+    proceeds = deal.base_quantity * mark_price
+    exit_fee = proceeds * D(str(deal.config.fee_rate_pct_per_side)) / D("100")
+    slippage_rate = D(str(deal.config.slippage_pct_per_side)) / D("100")
+    entry_slippage = deal.quote_spent * slippage_rate
+    exit_slippage = proceeds * slippage_rate
+    return (
+        proceeds - deal.quote_spent - deal.entry_fees_quote - exit_fee
+        - entry_slippage - exit_slippage
+    )
 
 
 def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[PaperEvent]:
