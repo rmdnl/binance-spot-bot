@@ -211,3 +211,45 @@ def test_worker_rolls_back_deal_state_and_audit_when_commit_fails(monkeypatch):
             verification.close()
         session.close()
         engine.dispose()
+
+
+
+def test_worker_rolls_back_one_deal_when_audit_write_fails(monkeypatch):
+    engine, session = _session()
+    try:
+        _, row, _ = _persist_active_deal(session)
+        original_state = row.state_json
+
+        class FakeMarketData:
+            def ticker(self, symbol):
+                return SimpleNamespace(last=D("98"))
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
+        original_add = session.add
+
+        def fail_audit_add(instance):
+            if isinstance(instance, models.AuditEvent):
+                raise RuntimeError("simulated audit write failure")
+            return original_add(instance)
+
+        monkeypatch.setattr(session, "add", fail_audit_add)
+        result = worker.tick_active_paper_deals(session)
+
+        assert result["updated"] == []
+        assert len(result["failures"]) == 1
+        assert result["failures"][0]["deal_id"] == row.id
+
+        verification = sessionmaker(bind=engine, expire_on_commit=False)()
+        try:
+            persisted = verification.get(PaperDealRecord, row.id)
+            assert persisted is not None
+            assert persisted.status == "active"
+            assert persisted.state_json == original_state
+            assert verification.query(models.AuditEvent).filter_by(
+                event_type="paper_deal_updated"
+            ).count() == 0
+        finally:
+            verification.close()
+    finally:
+        session.close()
+        engine.dispose()

@@ -31,9 +31,15 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
         rows = session.query(PaperDealRecord).filter_by(status="active").all()
         if not rows:
             return {"updated": updated, "failures": failures}
+        # SQLite's legacy transaction mode may not begin a physical transaction
+        # for SELECTs. Explicit BEGIN ensures released savepoints remain covered
+        # by the outer transaction and can still be rolled back if final commit fails.
+        if session.get_bind().dialect.name == "sqlite":
+            session.connection().exec_driver_sql("BEGIN")
         exchange = BinanceSpotMarketData()
         prices = {}
         for row in rows:
+            savepoint = session.begin_nested()
             try:
                 deal = deserialize_paper_deal(row.state_json)
                 if deal.symbol not in prices:
@@ -42,7 +48,7 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
                 row.status = deal.status
                 row.state_json = serialize_paper_deal(deal)
                 event_types = [event.event_type for event in events]
-                updated.append({"deal": deal.snapshot(), "events": event_types})
+                updated_item = {"deal": deal.snapshot(), "events": event_types}
                 if events:
                     session.add(AuditEvent(
                         event_type="paper_deal_updated",
@@ -90,7 +96,11 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
                                 event_type="paper_reinvestment_blocked",
                                 detail=json.dumps({"deal_id": deal.id, "reason": "updated strategy failed validation"}),
                             ))
+                savepoint.commit()
+                updated.append(updated_item)
             except Exception as exc:
+                if savepoint.is_active:
+                    savepoint.rollback()
                 logger.warning("Paper deal poll failed for %s: %s", row.id, exc)
                 failures.append({
                     "deal_id": row.id,
