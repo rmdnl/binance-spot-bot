@@ -355,6 +355,9 @@ def test_autonomous_scan_rolls_back_partial_deal_when_entry_audit_fails(monkeypa
             def candles(self, symbol, timeframe, limit):
                 return candles
 
+            def validate_minimum_order_sizes(self, symbol, config, price):
+                return None
+
         monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
         monkeypatch.setattr(worker, "analyze_market", lambda symbol, timeframe, rows, cfg: SimpleNamespace(
             action="candidate",
