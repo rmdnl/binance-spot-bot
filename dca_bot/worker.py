@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from decimal import Decimal as D
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -14,6 +15,7 @@ from .autonomous import analyze_market
 from .models import AuditEvent, PaperDealRecord, StrategyRecord
 from .strategy import StrategyConfig
 from .paper_engine import deserialize_paper_deal, serialize_paper_deal, start_paper_deal, update_paper_deal
+from .risk import reserved_capital_quote
 
 logger = logging.getLogger(__name__)
 
@@ -186,11 +188,13 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                             action, reason = "wait", "Configured cooldown has not elapsed"
                         else:
                             required = float(params.get("estimated_deal_capital_quote", float("inf")))
-                            used_capacity = sum(
-                                float(deal.config.max_capital_per_deal) for _, deal in strategy_deals
+                            used_capacity = reserved_capital_quote(
+                                [deal for _, deal in strategy_deals]
                             )
-                            if used_capacity + required > config.max_total_allocation:
-                                action, reason = "wait", "Total allocation cap would be exceeded"
+                            new_reservation = D(str(config.max_capital_per_deal))
+                            total_cap = D(str(config.max_total_allocation))
+                            if used_capacity + new_reservation > total_cap:
+                                action, reason = "wait", "Total allocation cap would be exceeded by active and new deal reservations"
                             elif not params.get("capital_safe", False):
                                 action, reason = "wait", "Adaptive DCA ladder exceeds the capital cap"
                             else:
