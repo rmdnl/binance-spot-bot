@@ -95,6 +95,19 @@ def ensure_authenticated(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Authentication required")
 
 
+def estimate_profile_capital(config: StrategyConfig, reference_price: float | None) -> tuple[float | None, float]:
+    """Estimate profile capital, deferring dynamic fixed-coin sizing to each discovered market.
+
+    Automatic USDT discovery spans assets with different prices, so a single reference
+    price cannot validate a fixed-coin DCA ladder for every candidate. The autonomous
+    scanner recalculates that ladder against each candidate's own closed-candle price.
+    """
+    if config.pair_selection_mode == "automatic_usdt" and config.averaging_method == "fixed_coin_amount":
+        return None, config.max_capital_per_deal * config.max_active_deals
+    required = config.estimated_max_deal_capital(reference_price)
+    return required, config.estimated_total_capacity(reference_price)
+
+
 def render_dashboard(request: Request, db: Session, *, saved: bool = False, error: str | None = None, status_code: int = 200):
     rows = db.query(StrategyRecord).order_by(StrategyRecord.id.desc()).all()
     strategies = []
@@ -616,13 +629,12 @@ def save_strategy(
             order_type=order_type,
         )
         price_for_estimate = float(reference_price) if reference_price.strip() else None
-        required_capital = config.estimated_max_deal_capital(price_for_estimate)
-        if required_capital > config.max_capital_per_deal:
+        required_capital, total_capacity = estimate_profile_capital(config, price_for_estimate)
+        if required_capital is not None and required_capital > config.max_capital_per_deal:
             raise ValueError(
                 f"Estimated deal capital ({required_capital:.2f} USDT) exceeds "
                 f"max capital per deal ({config.max_capital_per_deal:.2f} USDT)."
             )
-        total_capacity = config.estimated_total_capacity(price_for_estimate)
         if config.max_capital_per_deal * config.max_active_deals > config.max_total_allocation:
             raise ValueError(
                 "Max capital per deal multiplied by active deals exceeds total allocation cap."
