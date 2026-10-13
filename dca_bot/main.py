@@ -17,14 +17,14 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import is_authenticated, verify_password
 from .config import get_settings
 from .db import SessionLocal, get_db, init_db
-from .models import AuditEvent, PaperDealRecord, StrategyRecord
+from .models import AuditEvent, PaperDealRecord, StrategyRecord, StrategyRiskState
 from .strategy import StrategyConfig
 from .dca_math import build_dca_summary
 from .market_data import BinanceSpotMarketData
 from .autonomous import analyze_market
 from decimal import Decimal as D
 from .worker import run_paper_worker, tick_active_paper_deals
-from .risk import reserved_capital_quote
+from .risk import reserved_capital_quote, strategy_risk_status
 from .paper_engine import (
     deserialize_paper_deal,
     estimate_unrealized_pnl_quote,
@@ -272,6 +272,14 @@ def paper_deal_start(
     if record is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     try:
+        risk_status = strategy_risk_status(db, record)
+        if risk_status["blocked"]:
+            db.add(AuditEvent(
+                event_type="risk_entry_blocked",
+                detail=json.dumps({"strategy_id": strategy_id, "reason": risk_status["reason"], "source": "manual"}),
+            ))
+            db.commit()
+            raise HTTPException(status_code=409, detail=str(risk_status["reason"]))
         config = StrategyConfig.model_validate_json(record.config_json)
         normalized = BinanceSpotMarketData.normalize_symbol(symbol)
         active_rows = db.query(PaperDealRecord).filter_by(status="active").all()
@@ -296,10 +304,12 @@ def paper_deal_start(
             )
         ticker = BinanceSpotMarketData().ticker(normalized)
         deal = start_paper_deal(config, normalized, ticker.last)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Could not start paper deal because Spot market data is unavailable") from exc
+        raise HTTPException(status_code=503, detail="Risk state or Spot market data unavailable; entry blocked") from exc
     db.add(PaperDealRecord(
         id=deal.id,
         strategy_id=strategy_id,
@@ -313,6 +323,45 @@ def paper_deal_start(
     ))
     db.commit()
     return {"deal": deal.snapshot(), "execution": "paper", "orders_sent_to_exchange": False}
+
+
+@app.post("/api/risk/reset-drawdown")
+def reset_drawdown_guard(
+    request: Request,
+    csrf: str = Form(..., alias="csrf_token"),
+    strategy_id: int = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Admin-only reset for the latched paper-equity drawdown breaker."""
+    ensure_authenticated(request)
+    check_csrf(request, csrf)
+    record = db.get(StrategyRecord, strategy_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    try:
+        status = strategy_risk_status(db, record)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Risk state unavailable; reset refused") from exc
+    if status["daily_loss_tripped"]:
+        db.commit()
+        raise HTTPException(status_code=409, detail="Daily loss limit remains tripped; reset refused")
+    state = db.get(StrategyRiskState, strategy_id)
+    if state is None:
+        db.commit()
+        raise HTTPException(status_code=409, detail="Risk state is not initialized")
+    state.drawdown_tripped = False
+    state.drawdown_trip_reason = None
+    state.peak_equity_quote = str(status["equity_quote"])
+    db.add(AuditEvent(
+        event_type="risk_drawdown_reset",
+        detail=json.dumps({
+            "strategy_id": strategy_id,
+            "equity_quote": status["equity_quote"],
+            "actor": "admin",
+        }),
+    ))
+    db.commit()
+    return {"strategy_id": strategy_id, "drawdown_tripped": False, "peak_equity_quote": state.peak_equity_quote}
 
 
 @app.post("/api/paper/deals/tick")
