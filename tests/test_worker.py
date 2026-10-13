@@ -171,3 +171,43 @@ def test_worker_skips_autonomous_scan_when_maintenance_is_unsafe(monkeypatch, ti
     asyncio.run(worker.run_paper_worker(stop_event, 3))
 
     assert scan_calls == []
+
+
+def test_worker_rolls_back_deal_state_and_audit_when_commit_fails(monkeypatch):
+    engine, session = _session()
+    verification = None
+    try:
+        _, row, before = _persist_active_deal(session)
+        original_state = row.state_json
+
+        class FakeMarketData:
+            def ticker(self, symbol):
+                return SimpleNamespace(last=D("98"))
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
+
+        def fail_commit():
+            raise RuntimeError("simulated commit failure")
+
+        monkeypatch.setattr(session, "commit", fail_commit)
+
+        with pytest.raises(RuntimeError, match="simulated commit failure"):
+            worker.tick_active_paper_deals(session)
+
+        verification = sessionmaker(bind=engine, expire_on_commit=False)()
+        persisted = verification.get(PaperDealRecord, row.id)
+        assert persisted is not None
+        assert persisted.status == "active"
+        assert persisted.state_json == original_state
+        assert verification.query(models.AuditEvent).filter_by(
+            event_type="paper_deal_updated"
+        ).count() == 0
+
+        resumed = deserialize_paper_deal(persisted.state_json)
+        assert resumed.safety_orders_filled == before.safety_orders_filled
+        assert resumed.quote_spent == before.quote_spent
+    finally:
+        if verification is not None:
+            verification.close()
+        session.close()
+        engine.dispose()
