@@ -1,5 +1,5 @@
 from functools import lru_cache
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     paper_poll_interval_seconds: int = Field(default=10, ge=3, le=300)
     # Shared account-wide reservation cap across every strategy profile (USDT quote).
     global_capital_limit_quote: float = Field(default=120.0, gt=0, le=1_000_000_000)
+
+    @field_validator("app_env")
+    @classmethod
+    def normalize_app_env(cls, value: str) -> str:
+        """Normalize environment labels so production-only safeguards cannot be bypassed by casing."""
+        return value.strip().lower()
 
     def assert_safe(self) -> None:
         # Exchange execution is intentionally not implemented. Reject any setting
