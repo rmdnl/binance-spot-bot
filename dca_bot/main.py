@@ -24,6 +24,7 @@ from .market_data import BinanceSpotMarketData
 from .autonomous import analyze_market
 from decimal import Decimal as D
 from .worker import run_paper_worker, tick_active_paper_deals
+from .entry_guard import serialized_entry
 from .risk import reserved_capital_quote, strategy_risk_status
 from .paper_engine import (
     deserialize_paper_deal,
@@ -267,6 +268,7 @@ def paper_deals(request: Request, db: Session = Depends(get_db)):
 
 
 @app.post("/api/paper/deals/start")
+@serialized_entry
 def paper_deal_start(
     request: Request,
     csrf: str = Form(..., alias="csrf_token"),
