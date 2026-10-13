@@ -83,3 +83,28 @@ def test_login_page_does_not_expose_dashboard():
     response = TestClient(app).get('/login')
     assert response.status_code == 200
     assert 'Dashboard password' in response.text
+
+
+def test_fixed_coin_capital_requires_reference_price():
+    config = StrategyConfig(averaging_method="fixed_coin_amount", safety_order_base_quantity=0.01)
+    try:
+        config.estimated_max_deal_capital()
+    except ValueError as exc:
+        assert "reference price" in str(exc)
+    else:
+        raise AssertionError("Fixed coin estimate without a price should be rejected")
+
+
+def test_fixed_coin_capital_uses_dca_price_ladder():
+    config = StrategyConfig(
+        base_order_quote=10,
+        safety_order_quote=10,
+        max_safety_orders=2,
+        initial_deviation_pct=1,
+        deviation_scale=1,
+        averaging_method="fixed_coin_amount",
+        safety_order_base_quantity=0.1,
+        safety_order_volume_scale=1,
+    )
+    estimated = config.estimated_max_deal_capital(reference_price=100)
+    assert estimated == 10 + 0.1 * 99 + 0.1 * 98
