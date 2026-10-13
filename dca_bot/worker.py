@@ -157,11 +157,22 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
     session = db or SessionLocal()
     result: dict[str, Any] = {"started": [], "waited": [], "failures": []}
     try:
-        profiles = session.query(StrategyRecord).filter_by(enabled=True).all()
-        profiles = [
-            row for row in profiles
-            if StrategyConfig.model_validate_json(row.config_json).start_condition == "autonomous"
-        ]
+        enabled_profiles = session.query(StrategyRecord).filter_by(enabled=True).all()
+        profiles = []
+        for row in enabled_profiles:
+            try:
+                profile_config = StrategyConfig.model_validate_json(row.config_json)
+            except Exception as exc:
+                # One corrupted or obsolete profile must not abort scans for every
+                # other strategy. Fail closed for this profile and keep scanning.
+                logger.warning("Invalid strategy configuration for profile %s: %s", row.id, exc)
+                result["failures"].append({
+                    "strategy_id": row.id,
+                    "error": "Invalid strategy configuration; entries blocked",
+                })
+                continue
+            if profile_config.start_condition == "autonomous":
+                profiles.append(row)
         if not profiles:
             return result
 
