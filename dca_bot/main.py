@@ -219,7 +219,7 @@ def paper_deal_start(
         raise HTTPException(status_code=404, detail="Strategy not found")
     try:
         config = StrategyConfig.model_validate_json(record.config_json)
-        normalized = StrategyConfig.normalize_symbols([symbol])[0]
+        normalized = BinanceSpotMarketData.normalize_symbol(symbol)
         active_rows = db.query(PaperDealRecord).filter_by(status="active").all()
         strategy_active = 0
         symbol_active = 0
