@@ -1,0 +1,25 @@
+# DCA Bot systemd service template
+# Install to /etc/systemd/system/dca-bot.service after adjusting User and WorkingDirectory.
+[Unit]
+Description=DCA Bot dashboard and Spot DCA service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dca-bot
+Group=dca-bot
+WorkingDirectory=/opt/dca-bot
+EnvironmentFile=/opt/dca-bot/.env
+ExecStart=/opt/dca-bot/.venv/bin/uvicorn dca_bot.main:app --host ${APP_HOST} --port ${APP_PORT} --proxy-headers
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dca-bot/data /opt/dca-bot/logs
+
+[Install]
+WantedBy=multi-user.target
