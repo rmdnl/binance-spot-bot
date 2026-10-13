@@ -31,3 +31,8 @@ def test_paper_deal_start_api_requires_authentication():
 def test_autonomous_strategy_analysis_api_requires_authentication():
     response = TestClient(app).get("/api/strategy/analyze?symbol=BTCUSDT&timeframe=1h")
     assert response.status_code == 401
+
+
+def test_paper_risk_status_api_requires_authentication():
+    response = TestClient(app).get("/api/risk/status")
+    assert response.status_code == 401
