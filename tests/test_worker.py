@@ -462,3 +462,44 @@ def test_automatic_scanner_starts_highest_scoring_signal_first(monkeypatch):
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_invalid_enabled_profile_does_not_abort_other_autonomous_profiles(monkeypatch):
+    engine, session = _session()
+    try:
+        invalid = StrategyRecord(
+            name="broken-profile",
+            config_json="{not-valid-json",
+            enabled=True,
+        )
+        config = _config().model_copy(update={
+            "start_condition": "autonomous",
+            "entry_filter": "none",
+            "pair_selection_mode": "automatic_usdt",
+        })
+        valid = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=True,
+        )
+        session.add_all([invalid, valid])
+        session.commit()
+
+        class EmptyDiscovery:
+            def discover_usdt_symbols(self, **kwargs):
+                return []
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", EmptyDiscovery)
+
+        result = worker.scan_autonomous_strategies(session)
+
+        assert result["started"] == []
+        assert any(item["strategy_id"] == invalid.id for item in result["failures"])
+        assert any(
+            item["strategy_id"] == valid.id and item["symbol"] == "*"
+            for item in result["waited"]
+        )
+    finally:
+        session.close()
+        engine.dispose()
