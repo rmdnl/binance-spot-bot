@@ -149,7 +149,7 @@ def dca_preview(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
         "base_price": str(summary.base_price),
-        "base_order_quote": str(summary.base_order_quote),
+        "base_order_quote": str(summary.base_quote_amount),
         "base_quantity": str(summary.base_quantity),
         "safety_orders": [
             {
