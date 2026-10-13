@@ -184,6 +184,10 @@ def test_minimum_order_validation_rejects_base_order_below_market_min_cost():
         "BTC/USDT": {
             "spot": True,
             "active": True,
+            "info": {"filters": [
+                {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
+                {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "10000000", "tickSize": "0.01"},
+            ]},
             "limits": {"amount": {"min": 0.00001}, "cost": {"min": 5}},
         }
     }
@@ -207,7 +211,11 @@ def test_minimum_order_validation_rejects_quantity_below_market_min_amount():
         "BTC/USDT": {
             "spot": True,
             "active": True,
-            "limits": {"amount": {"min": 0.01}, "cost": {"min": 0}},
+            "info": {"filters": [
+                {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
+                {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "10000000", "tickSize": "0.01"},
+            ]},
+            "limits": {"amount": {"min": 0.00001}, "cost": {"min": 0}},
         }
     }
     adapter = BinanceSpotMarketData(FakeExchange(markets, {}))
@@ -240,3 +248,53 @@ def test_minimum_order_validation_fails_closed_when_market_minimums_are_missing(
     )
     with pytest.raises(ValueError, match="minimum-order metadata is unavailable"):
         adapter.validate_minimum_order_sizes("BTC/USDT", config, Decimal("50000"))
+
+
+def test_minimum_order_validation_blocks_when_binance_precision_filters_are_missing():
+    from dca_bot.strategy import StrategyConfig
+
+    adapter = BinanceSpotMarketData(FakeExchange({
+        "BTC/USDT": {
+            "spot": True,
+            "active": True,
+            "limits": {"amount": {"min": 0.00001}, "cost": {"min": 5}},
+        }
+    }, {}))
+    config = StrategyConfig(
+        symbols=["BTC/USDT"],
+        base_order_quote=10,
+        safety_order_quote=10,
+        max_safety_orders=0,
+        max_capital_per_deal=20,
+        max_total_allocation=20,
+    )
+    with pytest.raises(ValueError, match="LOT_SIZE/PRICE_FILTER metadata is unavailable"):
+        adapter.validate_minimum_order_sizes("BTC/USDT", config, Decimal("50000"))
+
+
+def test_minimum_order_validation_checks_minimum_cost_after_step_rounding():
+    from dca_bot.strategy import StrategyConfig
+
+    markets = {
+        "BTC/USDT": {
+            "spot": True,
+            "active": True,
+            "info": {"filters": [
+                {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
+                {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "10000000", "tickSize": "0.01"},
+            ]},
+            "limits": {"amount": {"min": 0.00001}, "cost": {"min": 5}},
+        }
+    }
+    adapter = BinanceSpotMarketData(FakeExchange(markets, {}))
+    config = StrategyConfig(
+        symbols=["BTC/USDT"],
+        base_order_quote=5.01,
+        safety_order_quote=5.01,
+        max_safety_orders=0,
+        max_capital_per_deal=10,
+        max_total_allocation=10,
+    )
+    # At 50000 USDT, the base quantity rounds down from 0.0001002 to 0.0001,
+    # leaving a rounded notional of exactly 5 USDT, so it remains eligible.
+    adapter.validate_minimum_order_sizes("BTC/USDT", config, Decimal("50000"))
