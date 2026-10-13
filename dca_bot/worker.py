@@ -309,12 +309,19 @@ async def run_paper_worker(stop_event: asyncio.Event, interval_seconds: int) -> 
     """Single-process paper-only loop. It never submits exchange orders."""
     last_autonomous_scan = 0.0
     while not stop_event.is_set():
+        maintenance_safe = True
         try:
-            await asyncio.to_thread(tick_active_paper_deals)
+            tick_result = await asyncio.to_thread(tick_active_paper_deals)
+            if tick_result.get("failures"):
+                maintenance_safe = False
+                logger.warning(
+                    "Skipping autonomous scan because paper deal maintenance reported failures"
+                )
         except Exception:
-            logger.exception("Paper DCA worker iteration failed")
+            maintenance_safe = False
+            logger.exception("Paper DCA worker iteration failed; autonomous scan skipped")
         now = time.monotonic()
-        if now - last_autonomous_scan >= max(60, interval_seconds):
+        if maintenance_safe and now - last_autonomous_scan >= max(60, interval_seconds):
             try:
                 await asyncio.to_thread(scan_autonomous_strategies)
             except Exception:
