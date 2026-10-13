@@ -134,8 +134,6 @@ def test_automatic_fixed_quote_profile_can_use_adaptive_ladder_within_cap():
 
 
 def test_paper_entry_persistence_failure_rolls_back_and_fails_closed():
-    from types import SimpleNamespace
-
     class FailingSession:
         def __init__(self):
             self.added = []
@@ -151,15 +149,7 @@ def test_paper_entry_persistence_failure_rolls_back_and_fails_closed():
             self.rolled_back = True
 
     session = FailingSession()
-    deal = SimpleNamespace(
-        id="paper-deal-id",
-        symbol="BTC/USDT",
-        status="active",
-        base_price=100,
-        snapshot=lambda: {},
-    )
-    # The helper serializes a complete PaperDeal, so use a real paper-engine
-    # deal while keeping the database commit deliberately unavailable.
+    # Use a real paper-engine deal while the database commit is unavailable.
     config = StrategyConfig(
         symbols=["BTC/USDT"],
         base_order_quote=10,
