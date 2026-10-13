@@ -113,7 +113,11 @@ def test_enabled_autonomous_profile_scans_closed_candle_without_real_orders(monk
 
     # The same closed candle is not evaluated twice.
     second = worker.scan_autonomous_strategies(session)
-    assert second == {"started": [], "waited": [], "failures": []}
+    # The active-deal guard runs before the candle-idempotency check, so the
+    # second scan reports the existing deal without evaluating/logging again.
+    assert second["started"] == []
+    assert second["failures"] == []
+    assert second["waited"][0]["reason"] == "pair already has an active deal"
     events = session.query(AuditEvent).filter_by(event_type="autonomous_decision").all()
     assert len(events) == 1
     detail = json.loads(events[0].detail)
