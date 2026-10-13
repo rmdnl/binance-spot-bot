@@ -150,6 +150,34 @@ class BinanceSpotMarketData:
             raise ValueError(f"{normalized} Binance precision metadata is invalid; entry blocked")
         min_amount = max(min_amount, filter_min_amount)
 
+        # CCXT normally maps Binance notional rules to limits.cost.min, but
+        # keep the raw exchange filters authoritative when they specify a
+        # stricter minimum. This avoids accepting an order when cached or
+        # incomplete normalized metadata understates Binance's current floor.
+        notional_filters = [
+            filter_map.get("MIN_NOTIONAL"),
+            filter_map.get("NOTIONAL"),
+        ]
+        for notional_filter in notional_filters:
+            if not isinstance(notional_filter, dict):
+                continue
+            raw_min_notional = notional_filter.get("minNotional")
+            if raw_min_notional is None:
+                raise ValueError(
+                    f"{normalized} Binance notional filter is invalid; entry blocked"
+                )
+            try:
+                filter_min_cost = Decimal(str(raw_min_notional))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"{normalized} Binance notional filter is invalid; entry blocked"
+                ) from exc
+            if not filter_min_cost.is_finite() or filter_min_cost < 0:
+                raise ValueError(
+                    f"{normalized} Binance notional filter is invalid; entry blocked"
+                )
+            min_cost = max(min_cost, filter_min_cost)
+
         def floor_step(value: Decimal, step: Decimal) -> Decimal:
             return (value // step) * step
 
