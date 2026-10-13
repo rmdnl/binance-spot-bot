@@ -180,13 +180,27 @@ def _read_autonomous_history_from_audit(
     for event in events:
         try:
             detail = json.loads(event.detail)
-            key = (int(detail["strategy_id"]), str(detail["symbol"]))
+            if not isinstance(detail, dict):
+                raise ValueError("audit detail must be a JSON object")
+            strategy_id = int(detail["strategy_id"])
+            symbol = str(detail["symbol"])
+            if strategy_id <= 0 or not symbol:
+                raise ValueError("audit strategy/pair identity is invalid")
+            key = (strategy_id, symbol)
             if event.event_type == "autonomous_decision":
+                candle_timestamp_ms = int(detail["candle_timestamp_ms"])
+                if candle_timestamp_ms <= 0:
+                    raise ValueError("decision candle timestamp is invalid")
                 last_decision.setdefault(key, detail)
             elif event.event_type == "autonomous_entry_started":
-                last_entry.setdefault(key, float(detail["started_at_epoch"]))
-        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-            continue
+                started_at = float(detail["started_at_epoch"])
+                if not math.isfinite(started_at) or started_at < 0:
+                    raise ValueError("entry timestamp is invalid")
+                last_entry.setdefault(key, started_at)
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "Corrupt legacy autonomous audit history; scanner entries blocked until recovery"
+            ) from exc
     return last_decision, last_entry
 
 
