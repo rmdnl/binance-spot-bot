@@ -1,5 +1,8 @@
+import pytest
 from fastapi.testclient import TestClient
+from dca_bot import main
 from dca_bot.main import app
+from dca_bot.strategy import StrategyConfig
 
 
 def test_health_reports_execution_disabled():
@@ -78,3 +81,31 @@ def test_strategy_analysis_rejects_stale_candles(monkeypatch):
 
     assert response.status_code == 422
     assert "stale" in response.json()["detail"]
+
+
+def test_automatic_fixed_coin_profile_defers_capital_estimate_to_each_candidate():
+    config = StrategyConfig(
+        pair_selection_mode="automatic_usdt",
+        averaging_method="fixed_coin_amount",
+        max_capital_per_deal=200,
+        max_total_allocation=600,
+        max_active_deals=3,
+    )
+
+    required, total_capacity = main.estimate_profile_capital(config, None)
+
+    assert required is None
+    assert total_capacity == 600
+
+
+def test_manual_fixed_coin_profile_still_requires_reference_price():
+    config = StrategyConfig(
+        pair_selection_mode="manual",
+        averaging_method="fixed_coin_amount",
+        max_capital_per_deal=200,
+        max_total_allocation=600,
+        max_active_deals=3,
+    )
+
+    with pytest.raises(ValueError, match="positive reference price"):
+        main.estimate_profile_capital(config, None)
