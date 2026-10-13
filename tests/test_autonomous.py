@@ -157,3 +157,11 @@ def test_autonomous_candidate_opens_only_a_simulated_paper_deal(monkeypatch):
     assert "orders_sent_to_exchange" not in result
     session.close()
     engine.dispose()
+
+
+
+def test_autonomous_engine_rejects_inconsistent_ohlc_data():
+    candles = candles_from_closes([100 + i * 0.1 for i in range(100)])
+    candles[-1][2] = candles[-1][4] * 0.5  # high below close is invalid
+    with pytest.raises(ValueError, match="inconsistent high/low"):
+        calculate_indicators(candles, config())
