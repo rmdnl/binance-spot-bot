@@ -370,6 +370,8 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                                         "safety_order_volume_scale": float(params["safety_order_volume_scale"]),
                                     })
                                     price = float(closed_candles[-1][4])
+                                    # Minimum-order metadata is a required preflight. Missing or failing validation blocks entry.
+                                    exchange.validate_minimum_order_sizes(symbol, adaptive_config, price)
                                     deal = start_paper_deal(adaptive_config, symbol, price)
                                     session.add(PaperDealRecord(
                                         id=deal.id,
