@@ -256,6 +256,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let item;
     try { item = JSON.parse(button.getAttribute('data-edit')); } catch { return; }
     const config = item.config || {};
+    const autoPaperCheckbox = field('auto_paper_enabled');
+    if (autoPaperCheckbox) autoPaperCheckbox.checked = Boolean(item.enabled && config.start_condition === 'autonomous');
     setField('strategy_id', item.id);
     setField('name', config.name || item.name);
     setField('symbols', (config.symbols || item.symbols || []).join(', '));

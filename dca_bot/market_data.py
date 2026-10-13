@@ -67,3 +67,22 @@ class BinanceSpotMarketData:
             ask=ask,
             timestamp_ms=int(timestamp) if timestamp is not None else None,
         )
+
+
+    def candles(self, symbol: str, timeframe: str, limit: int = 500) -> list[list[float]]:
+        """Fetch public Binance Spot OHLCV candles; no credentials or orders are used."""
+        normalized = self.normalize_symbol(symbol)
+        if timeframe not in {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"}:
+            raise ValueError("Unsupported Binance Spot candle timeframe")
+        if limit < 1 or limit > 1000:
+            raise ValueError("Candle limit must be between 1 and 1000")
+        markets = self.exchange.load_markets()
+        market = markets.get(normalized)
+        if not market:
+            raise ValueError(f"Binance Spot market {normalized} was not found")
+        if market.get("spot") is not True or market.get("active") is False:
+            raise ValueError(f"{normalized} is not an active Binance Spot market")
+        rows = self.exchange.fetch_ohlcv(normalized, timeframe=timeframe, limit=limit)
+        if not isinstance(rows, list):
+            raise ValueError("Exchange returned invalid candle data")
+        return rows

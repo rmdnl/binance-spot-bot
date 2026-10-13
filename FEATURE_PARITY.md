@@ -7,11 +7,12 @@ This is an independent implementation aiming for comparable Spot DCA workflows. 
 | Capability | Status | Notes |
 |---|---|---|
 | Password-protected dashboard and CSRF token | Implemented foundation | Add Cloudflare Access as an outer access gate before public exposure. |
-| Manual symbol selection and saved strategy profiles | Implemented foundation | Saved profiles do not execute trades. |
+| Manual symbol selection and saved strategy profiles | Implemented foundation | Autonomous paper mode must be explicitly enabled on a saved profile. |
 | Public Binance Spot ticker | Implemented | Read-only CCXT adapter; no API key is used for public market data. |
 | DCA ladder/capital preview | Implemented foundation | Arithmetic cumulative price-deviation ladder, position/order averaging, fixed quote and fixed coin order sizing. |
 | Basic/Advanced/Risk settings | Partial | Some fields are saved but do not yet drive a running deal engine. |
 | Paper deal lifecycle | Implemented foundation | Persisted base/safety fills, average entry, fee-aware simulated PnL, TP, trailing TP, SL/breakeven, duration cap, profit reinvestment, and background price polling. Needs broader state-machine/failure testing. |
+| Autonomous market analysis | Implemented for paper mode | EMA/RSI/ATR/ADX, closed-candle evaluation, volatility-aware DCA spacing/TP, capital caps, decision audit, and candle-level idempotency. It may open simulated deals only; no exchange orders. |
 | Binance Spot Testnet order execution | Not implemented | Must follow paper simulation and reconciliation tests. |
 | Live trading | Disabled | Must remain disabled until safety gates and Testnet validation pass. |
 
@@ -21,7 +22,7 @@ This is an independent implementation aiming for comparable Spot DCA workflows. 
 
 - Spot-only long DCA; no futures, margin, leverage, or short-selling.
 - One or multiple trading pairs with independent deals and configurable global/per-pair deal caps.
-- Manual start, immediate start, indicator conditions, and authenticated webhook start signals.
+- Manual start, immediate start, autonomous paper entry from EMA/RSI/ATR/ADX conditions. Webhook start signals and additional indicator profiles remain pending.
 - Market and limit orders, order timeout, cooldown, and exchange precision/minimum-notional validation.
 - Fixed quote amount, fixed coin amount, and balance-percentage sizing.
 - Position averaging and order averaging, safety-order count, volume multiplier, initial deviation, deviation multiplier, and arithmetic/geometric ladder choice.
@@ -53,7 +54,7 @@ This is an independent implementation aiming for comparable Spot DCA workflows. 
 1. DCA math and configuration validation.
 2. Read-only market data and exchange symbol filters.
 3. Deterministic paper engine, persisted deal state and restart serialization (in progress).
-4. Indicator-based entry conditions, fuller deal controls and detailed event history.
+4. Broader autonomous strategy validation, fuller deal controls and detailed event history.
 5. Restart recovery and idempotent reconciliation.
 6. Binance Spot Testnet execution and adversarial failure tests.
 7. Dashboard history, PnL and risk panels wired to complete state.
