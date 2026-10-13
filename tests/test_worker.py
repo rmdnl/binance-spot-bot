@@ -721,3 +721,80 @@ def test_autonomous_history_restores_quiet_pairs_beyond_previous_global_limit():
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_autonomous_scan_rolls_back_deal_and_audit_when_final_commit_fails(monkeypatch):
+    engine, session = _session()
+    verification = None
+    try:
+        config = _config().model_copy(update={
+            "start_condition": "autonomous",
+            "entry_filter": "none",
+            "pair_selection_mode": "automatic_usdt",
+            "max_active_deals": 2,
+        })
+        strategy = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=True,
+        )
+        session.add(strategy)
+        session.commit()
+        strategy_id = strategy.id
+
+        current_hour_ms = (int(time.time() * 1000) // 3_600_000) * 3_600_000
+        candles = [
+            [current_hour_ms - (300 - index) * 3_600_000, 100, 101, 99, 100, 1000]
+            for index in range(301)
+        ]
+
+        class FakeMarketData:
+            def discover_usdt_symbols(self, **kwargs):
+                return ["ETH/USDT"]
+
+            def candles(self, symbol, timeframe, limit):
+                return candles
+
+            def validate_minimum_order_sizes(self, symbol, config, price):
+                return None
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
+        monkeypatch.setattr(worker, "analyze_market", lambda symbol, timeframe, rows, cfg: SimpleNamespace(
+            action="candidate",
+            reason="test candidate",
+            score=90,
+            indicators=SimpleNamespace(
+                close=100, ema_fast=100, ema_slow=99, rsi=35, atr_pct=1.2, adx=25
+            ),
+            parameters={
+                "estimated_deal_capital_quote": 50,
+                "capital_safe": True,
+                "initial_deviation_pct": 1.0,
+                "deviation_scale": 1.2,
+                "take_profit_pct": 1.0,
+                "max_safety_orders": 2,
+                "safety_order_volume_scale": 1.2,
+            },
+        ))
+
+        def fail_commit():
+            raise RuntimeError("simulated final transaction commit failure")
+
+        monkeypatch.setattr(session, "commit", fail_commit)
+        with pytest.raises(RuntimeError, match="final transaction commit failure"):
+            worker.scan_autonomous_strategies(session)
+
+        verification = sessionmaker(bind=engine, expire_on_commit=False)()
+        assert verification.query(PaperDealRecord).count() == 0
+        assert verification.query(models.AuditEvent).filter(
+            models.AuditEvent.event_type.in_(
+                ("autonomous_entry_started", "autonomous_decision")
+            )
+        ).count() == 0
+        assert verification.get(models.StrategyRiskState, strategy_id) is None
+    finally:
+        if verification is not None:
+            verification.close()
+        session.close()
+        engine.dispose()
