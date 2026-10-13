@@ -43,7 +43,7 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
                 row.status = deal.status
                 row.state_json = serialize_paper_deal(deal)
                 event_types = [event.event_type for event in events]
-                updated.append({"deal": deal.snapshot(), "events": event_types})
+                updated_item = {"deal": deal.snapshot(), "events": event_types}
                 if events:
                     session.add(AuditEvent(
                         event_type="paper_deal_updated",
@@ -92,6 +92,7 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
                                 detail=json.dumps({"deal_id": deal.id, "reason": "updated strategy failed validation"}),
                             ))
                 savepoint.commit()
+                updated.append(updated_item)
             except Exception as exc:
                 if savepoint.is_active:
                     savepoint.rollback()
