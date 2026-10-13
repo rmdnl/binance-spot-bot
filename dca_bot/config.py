@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     binance_api_key: str = ''
     binance_api_secret: str = ''
     binance_testnet: bool = True
-    session_cookie_secure: bool = True
+    session_cookie_secure: bool = False
     session_max_age_seconds: int = Field(default=3600, ge=300, le=86400)
 
     def assert_safe(self) -> None:
@@ -27,6 +27,8 @@ class Settings(BaseSettings):
                 raise ValueError('APP_SECRET_KEY must be a unique random secret of at least 32 chars in production')
             if not self.admin_password_hash:
                 raise ValueError('ADMIN_PASSWORD_HASH must be configured in production')
+            if not self.session_cookie_secure:
+                raise ValueError('SESSION_COOKIE_SECURE must be true in production behind HTTPS')
             if self.trading_mode == 'live' and not self.live_trading_enabled:
                 raise ValueError('Live mode requires LIVE_TRADING_ENABLED=true')
 
