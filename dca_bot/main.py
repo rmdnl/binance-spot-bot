@@ -286,6 +286,11 @@ def paper_deals(request: Request, db: Session = Depends(get_db)):
                 status_code=503,
                 detail="Persisted paper deal status is inconsistent; dashboard data is withheld for safety",
             )
+        if row.symbol != deal.symbol:
+            raise HTTPException(
+                status_code=503,
+                detail="Persisted paper deal symbol is inconsistent; dashboard data is withheld for safety",
+            )
         snapshot = deal.snapshot()
         if deal.status == "active":
             snapshot["unrealized_pnl_quote"] = str(
