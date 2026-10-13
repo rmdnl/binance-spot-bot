@@ -133,3 +133,44 @@ def test_discovery_validates_limits():
     adapter = BinanceSpotMarketData(DiscoveryExchange({}, {}))
     with pytest.raises(ValueError, match="Invalid automatic pair discovery limits"):
         adapter.discover_usdt_symbols(limit=0)
+
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"min_quote_volume_24h": float("nan")},
+        {"min_quote_volume_24h": float("inf")},
+        {"max_spread_pct": float("nan")},
+        {"max_spread_pct": float("inf")},
+    ],
+)
+def test_discovery_rejects_non_finite_thresholds(kwargs):
+    class DiscoveryExchange(FakeExchange):
+        def fetch_tickers(self):
+            return {}
+    with pytest.raises(ValueError, match="Invalid automatic pair discovery limits"):
+        BinanceSpotMarketData(DiscoveryExchange({}, {})).discover_usdt_symbols(**kwargs)
+
+
+def test_discovery_reuses_bulk_ticker_snapshot_for_multiple_profiles():
+    now_ms = int(time.time() * 1000)
+    markets = {
+        "BTC/USDT": {"spot": True, "active": True, "base": "BTC", "quote": "USDT"},
+        "ETH/USDT": {"spot": True, "active": True, "base": "ETH", "quote": "USDT"},
+    }
+    class DiscoveryExchange(FakeExchange):
+        ticker_calls = 0
+
+        def fetch_tickers(self):
+            self.ticker_calls += 1
+            return {
+                "BTC/USDT": {"last": 100, "bid": 99.99, "ask": 100.01, "quoteVolume": 20_000_000, "timestamp": now_ms},
+                "ETH/USDT": {"last": 50, "bid": 49.99, "ask": 50.01, "quoteVolume": 10_000_000, "timestamp": now_ms},
+            }
+
+    exchange = DiscoveryExchange(markets, {})
+    adapter = BinanceSpotMarketData(exchange)
+    assert adapter.discover_usdt_symbols(limit=1) == ["BTC/USDT"]
+    assert adapter.discover_usdt_symbols(limit=2) == ["BTC/USDT", "ETH/USDT"]
+    assert exchange.ticker_calls == 1
