@@ -322,3 +322,74 @@ def test_autonomous_automatic_mode_scans_discovered_usdt_pairs_not_manual_symbol
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_autonomous_scan_rolls_back_partial_deal_when_entry_audit_fails(monkeypatch):
+    engine, session = _session()
+    try:
+        config = _config().model_copy(update={
+            "start_condition": "autonomous",
+            "entry_filter": "none",
+            "pair_selection_mode": "automatic_usdt",
+            "max_active_deals": 2,
+        })
+        strategy = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=True,
+        )
+        session.add(strategy)
+        session.commit()
+
+        current_hour_ms = (int(time.time() * 1000) // 3_600_000) * 3_600_000
+        candles = [
+            [current_hour_ms - (300 - index) * 3_600_000, 100, 101, 99, 100, 1000]
+            for index in range(301)
+        ]
+
+        class FakeMarketData:
+            def discover_usdt_symbols(self, **kwargs):
+                return ["ETH/USDT"]
+
+            def candles(self, symbol, timeframe, limit):
+                return candles
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
+        monkeypatch.setattr(worker, "analyze_market", lambda symbol, timeframe, rows, cfg: SimpleNamespace(
+            action="candidate",
+            reason="test candidate",
+            score=90,
+            indicators=SimpleNamespace(
+                close=100, ema_fast=100, ema_slow=99, rsi=35, atr_pct=1.2, adx=25
+            ),
+            parameters={
+                "estimated_deal_capital_quote": 50,
+                "capital_safe": True,
+                "initial_deviation_pct": 1.0,
+                "deviation_scale": 1.2,
+                "take_profit_pct": 1.0,
+                "max_safety_orders": 2,
+                "safety_order_volume_scale": 1.2,
+            },
+        ))
+
+        original_add = session.add
+
+        def fail_entry_audit(instance):
+            if isinstance(instance, models.AuditEvent) and instance.event_type == "autonomous_entry_started":
+                raise RuntimeError("simulated entry audit failure")
+            return original_add(instance)
+
+        monkeypatch.setattr(session, "add", fail_entry_audit)
+        result = worker.scan_autonomous_strategies(session)
+
+        assert result["started"] == []
+        assert len(result["failures"]) == 1
+        assert session.query(PaperDealRecord).filter_by(status="active").count() == 0
+        assert session.query(models.AuditEvent).filter_by(
+            event_type="autonomous_entry_started"
+        ).count() == 0
+    finally:
+        session.close()
+        engine.dispose()
