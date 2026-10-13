@@ -16,7 +16,7 @@ from .autonomous import analyze_market
 from .models import AuditEvent, PaperDealRecord, StrategyRecord
 from .strategy import StrategyConfig
 from .paper_engine import deserialize_paper_deal, serialize_paper_deal, start_paper_deal, update_paper_deal
-from .risk import reserved_capital_quote, strategy_risk_status
+from .risk import global_capital_status, reserved_capital_quote, strategy_risk_status
 from .entry_guard import serialized_entry
 
 logger = logging.getLogger(__name__)
@@ -338,8 +338,15 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                                 )
                                 new_reservation = D(str(config.max_capital_per_deal))
                                 total_cap = D(str(config.max_total_allocation))
-                                global_limit = D(str(get_settings().global_capital_limit_quote))
-                                global_reserved = reserved_capital_quote([deal for _, deal in active_deals])
+                                # Reuse the account-wide guard, which also validates every
+                                # active persisted row/state pair. A mismatch in another
+                                # strategy must block this entry rather than be treated as
+                                # a valid global reservation snapshot.
+                                global_status = global_capital_status(
+                                    session, D(str(get_settings().global_capital_limit_quote))
+                                )
+                                global_limit = D(global_status["limit_quote"])
+                                global_reserved = D(global_status["reserved_quote"])
                                 if global_reserved + new_reservation > global_limit:
                                     action, reason = "wait", "Global capital limit would be exceeded by active and new deal reservations across all strategies"
                                 elif used_capacity + new_reservation > total_cap:
