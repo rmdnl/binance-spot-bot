@@ -9,9 +9,9 @@ This is an independent implementation aiming for comparable Spot DCA workflows. 
 | Password-protected dashboard and CSRF token | Implemented foundation | Add Cloudflare Access as an outer access gate before public exposure. |
 | Manual symbol selection and saved strategy profiles | Implemented foundation | Saved profiles do not execute trades. |
 | Public Binance Spot ticker | Implemented | Read-only CCXT adapter; no API key is used for public market data. |
-| DCA ladder/capital preview | Implemented foundation | Arithmetic cumulative price-deviation ladder, fixed quote and fixed coin order sizing. |
+| DCA ladder/capital preview | Implemented foundation | Arithmetic cumulative price-deviation ladder, position/order averaging, fixed quote and fixed coin order sizing. |
 | Basic/Advanced/Risk settings | Partial | Some fields are saved but do not yet drive a running deal engine. |
-| Paper deal lifecycle | Not implemented | Next major milestone. |
+| Paper deal lifecycle | Implemented foundation | Persisted base/safety fills, average entry, fee-aware simulated PnL, TP, trailing TP, SL/breakeven, duration cap, profit reinvestment, and background price polling. Needs broader state-machine/failure testing. |
 | Binance Spot Testnet order execution | Not implemented | Must follow paper simulation and reconciliation tests. |
 | Live trading | Disabled | Must remain disabled until safety gates and Testnet validation pass. |
 
@@ -52,11 +52,12 @@ This is an independent implementation aiming for comparable Spot DCA workflows. 
 
 1. DCA math and configuration validation.
 2. Read-only market data and exchange symbol filters.
-3. Deterministic paper engine and persisted deal/order state.
-4. Restart recovery and idempotent reconciliation.
-5. Binance Spot Testnet execution and adversarial failure tests.
-6. Dashboard deal controls, history, PnL and risk panels wired to real state.
-7. Security review and manual approval before any live mode implementation.
+3. Deterministic paper engine, persisted deal state and restart serialization (in progress).
+4. Indicator-based entry conditions, fuller deal controls and detailed event history.
+5. Restart recovery and idempotent reconciliation.
+6. Binance Spot Testnet execution and adversarial failure tests.
+7. Dashboard history, PnL and risk panels wired to complete state.
+8. Security review and manual approval before any live mode implementation.
 
 Reference behaviour from official 3Commas documentation:
 - [DCA Bot setup and settings](https://help.3commas.io/en/articles/16281102-how-the-dca-bot-works-strategy-setup-guide)
