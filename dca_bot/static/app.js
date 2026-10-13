@@ -119,7 +119,8 @@ document.addEventListener('DOMContentLoaded', () => {
       deviation_scale: String(num('deviation_scale', 1.5)),
       safety_volume_scale: String(num('safety_order_volume_scale', 1.5)),
       averaging_method: field('averaging_method')?.value || 'fixed_order_value',
-      safety_order_base_quantity: String(num('safety_order_base_quantity', 0.001))
+      safety_order_base_quantity: String(num('safety_order_base_quantity', 0.001)),
+      dca_mode: field('dca_mode')?.value || 'position_averaging'
     });
     previewNode.textContent = 'Calculating ladder…';
     try {

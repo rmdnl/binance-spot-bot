@@ -105,6 +105,7 @@ class StrategyConfig(BaseModel):
                 safety_volume_scale=Decimal(str(self.safety_order_volume_scale)),
                 averaging_method=self.averaging_method,
                 safety_order_base_quantity=Decimal(str(self.safety_order_base_quantity)),
+                dca_mode=self.dca_mode,
             )
             return float(summary.total_quote_required)
         total = self.base_order_quote

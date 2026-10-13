@@ -101,6 +101,7 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
             safety_volume_scale=D(str(config.safety_order_volume_scale)),
             averaging_method=config.averaging_method,
             safety_order_base_quantity=D(str(config.safety_order_base_quantity)),
+            dca_mode=config.dca_mode,
         )
     else:
         summary = build_dca_summary(

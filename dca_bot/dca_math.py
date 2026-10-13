@@ -47,6 +47,7 @@ def build_dca_summary(
     safety_volume_scale: Decimal = D("1"),
     averaging_method: str = "fixed_order_value",
     safety_order_base_quantity: Decimal = D("0.001"),
+    dca_mode: str = "position_averaging",
 ) -> DcaSummary:
     """Calculate a long-only Spot DCA ladder using cumulative arithmetic deviations.
 
@@ -63,6 +64,8 @@ def build_dca_summary(
     base_safety_qty = _positive(safety_order_base_quantity, "safety_order_base_quantity")
     if averaging_method not in {"fixed_order_value", "fixed_coin_amount"}:
         raise ValueError("averaging_method must be fixed_order_value or fixed_coin_amount")
+    if dca_mode not in {"position_averaging", "order_averaging"}:
+        raise ValueError("dca_mode must be position_averaging or order_averaging")
     if not 0 <= safety_order_count <= 30:
         raise ValueError("safety_order_count must be between 0 and 30")
     if initial >= 100:
@@ -77,15 +80,16 @@ def build_dca_summary(
     qty_total = base_qty
     for index in range(1, safety_order_count + 1):
         step = initial * (deviation_mult ** (index - 1))
+        volume_exponent = index if dca_mode == "order_averaging" else index - 1
         cumulative_deviation += step
         if cumulative_deviation >= 100:
             raise ValueError("Safety order ladder reaches zero or negative price")
         order_price = price0 * (D("1") - cumulative_deviation / D("100"))
         if averaging_method == "fixed_coin_amount":
-            order_qty = base_safety_qty * (volume_mult ** (index - 1))
+            order_qty = base_safety_qty * (volume_mult ** volume_exponent)
             order_quote = order_qty * order_price
         else:
-            order_quote = safety_quote * (volume_mult ** (index - 1))
+            order_quote = safety_quote * (volume_mult ** volume_exponent)
             order_qty = order_quote / order_price
         levels.append(SafetyOrderLevel(
             index=index,
