@@ -103,6 +103,7 @@ def _risk_test_session():
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from dca_bot.db import Base
+    from dca_bot import models  # register ORM tables before create_all
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     return engine, sessionmaker(bind=engine, expire_on_commit=False)()
