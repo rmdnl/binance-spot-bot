@@ -199,14 +199,32 @@ def analyze_market(
     # Volatility-aware spacing and TP, bounded to prevent unbounded parameter drift.
     initial_deviation = _bounded(indicators.atr_pct * 1.25, 0.5, 3.0)
     deviation_scale = _bounded(1.2 + indicators.atr_pct / 12.0, 1.2, 1.8)
-    take_profit = _bounded(
-        max(config.take_profit_pct, config.min_net_profit_pct
-            + 2 * config.fee_rate_pct_per_side
-            + 2 * config.slippage_pct_per_side,
-            indicators.atr_pct * 0.8),
-        0.5,
-        5.0,
+    minimum_net_target_pct = (
+        config.min_net_profit_pct
+        + 2 * config.fee_rate_pct_per_side
+        + 2 * config.slippage_pct_per_side
     )
+    # Keep ordinary targets close enough to market to encourage completed cycles.
+    # The 5% hard ceiling is only available when the configured net-profit floor
+    # plus estimated round-trip costs genuinely requires a target above 3%.
+    adaptive_base_target = _bounded(
+        max(config.take_profit_pct, indicators.atr_pct * 0.8),
+        0.5,
+        3.0,
+    )
+    if minimum_net_target_pct > 5.0:
+        action = "wait"
+        reason = (
+            "Minimum net-profit requirement plus estimated fees/slippage exceeds "
+            "the 5% take-profit hard cap"
+        )
+        take_profit = 5.0
+    else:
+        take_profit = _bounded(
+            max(adaptive_base_target, minimum_net_target_pct),
+            0.5,
+            5.0,
+        )
     safe_count = min(config.max_safety_orders, 8)
     parameters: dict[str, object] = {
         "initial_deviation_pct": initial_deviation,
