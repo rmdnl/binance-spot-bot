@@ -503,3 +503,30 @@ def test_invalid_enabled_profile_does_not_abort_other_autonomous_profiles(monkey
     finally:
         session.close()
         engine.dispose()
+
+
+def test_worker_does_not_silently_reconcile_persisted_status_mismatch(monkeypatch):
+    engine, session = _session()
+    try:
+        _, row, deal = _persist_active_deal(session)
+        # Persist a closed state payload while the indexed row still says active.
+        deal.status = "closed"
+        row.state_json = serialize_paper_deal(deal)
+        session.commit()
+        original_state = row.state_json
+
+        class UnexpectedMarketData:
+            def ticker(self, symbol):
+                raise AssertionError("Market data must not be fetched for inconsistent state")
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", UnexpectedMarketData)
+        result = worker.tick_active_paper_deals(session)
+
+        assert result["updated"] == []
+        assert any(item.get("deal_id") == row.id for item in result["failures"])
+        persisted = session.get(PaperDealRecord, row.id)
+        assert persisted.status == "active"
+        assert persisted.state_json == original_state
+    finally:
+        session.close()
+        engine.dispose()
