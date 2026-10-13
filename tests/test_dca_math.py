@@ -3,6 +3,7 @@ from decimal import Decimal as D
 import pytest
 
 from dca_bot.dca_math import build_dca_summary
+from dca_bot.risk import reserved_capital_quote
 
 
 def test_even_safety_order_ladder_and_capital():
@@ -74,3 +75,24 @@ def test_order_averaging_applies_volume_multiplier_to_first_safety_order():
     assert [x.quote_amount for x in position.safety_orders] == [D("10"), D("15")]
     assert [x.quote_amount for x in order.safety_orders] == [D("15"), D("22.5")]
     assert order.total_quote_required > position.total_quote_required
+
+
+from types import SimpleNamespace
+
+
+def _active_deal_with_cap(cap):
+    return SimpleNamespace(config=SimpleNamespace(max_capital_per_deal=cap))
+
+
+def test_reserved_capital_uses_full_cap_for_each_active_deal():
+    assert reserved_capital_quote([_active_deal_with_cap(100), _active_deal_with_cap(200)]) == D("300")
+
+
+def test_reserved_capital_is_zero_without_active_deals():
+    assert reserved_capital_quote([]) == D("0")
+
+
+@pytest.mark.parametrize("cap", ["NaN", "Infinity", "-1"])
+def test_reserved_capital_rejects_invalid_reservations(cap):
+    with pytest.raises(ValueError, match="invalid capital reservation"):
+        reserved_capital_quote([_active_deal_with_cap(cap)])

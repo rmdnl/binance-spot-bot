@@ -38,3 +38,18 @@ def validate_budget(required_capital: Decimal, per_deal_cap: Decimal, total_cap:
         raise ValueError(f'Required capital {required_capital} exceeds per-deal cap {per_deal_cap}')
     if per_deal_cap * active_deals > total_cap:
         raise ValueError('Per-deal cap multiplied by active deals exceeds the total allocation cap')
+
+
+def reserved_capital_quote(active_deals) -> Decimal:
+    """Conservatively reserve each active deal's full configured capital cap.
+
+    Reserving the full cap prevents manual and autonomous entry paths from
+    spending the same strategy allocation twice while safety orders remain open.
+    """
+    total = Decimal("0")
+    for deal in active_deals:
+        cap = Decimal(str(deal.config.max_capital_per_deal))
+        if not cap.is_finite() or cap < 0:
+            raise ValueError("Active deal has an invalid capital reservation")
+        total += cap
+    return total
