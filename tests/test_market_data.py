@@ -174,3 +174,50 @@ def test_discovery_reuses_bulk_ticker_snapshot_for_multiple_profiles():
     assert adapter.discover_usdt_symbols(limit=1) == ["BTC/USDT"]
     assert adapter.discover_usdt_symbols(limit=2) == ["BTC/USDT", "ETH/USDT"]
     assert exchange.ticker_calls == 1
+
+
+
+def test_minimum_order_validation_rejects_base_order_below_market_min_cost():
+    from dca_bot.strategy import StrategyConfig
+
+    markets = {
+        "BTC/USDT": {
+            "spot": True,
+            "active": True,
+            "limits": {"amount": {"min": 0.00001}, "cost": {"min": 5}},
+        }
+    }
+    adapter = BinanceSpotMarketData(FakeExchange(markets, {}))
+    config = StrategyConfig(
+        symbols=["BTC/USDT"],
+        base_order_quote=1,
+        safety_order_quote=1,
+        max_safety_orders=0,
+        max_capital_per_deal=10,
+        max_total_allocation=10,
+    )
+    with pytest.raises(ValueError, match="below the market minimum cost"):
+        adapter.validate_minimum_order_sizes("BTC/USDT", config, Decimal("50000"))
+
+
+def test_minimum_order_validation_rejects_quantity_below_market_min_amount():
+    from dca_bot.strategy import StrategyConfig
+
+    markets = {
+        "BTC/USDT": {
+            "spot": True,
+            "active": True,
+            "limits": {"amount": {"min": 0.01}, "cost": {"min": 0}},
+        }
+    }
+    adapter = BinanceSpotMarketData(FakeExchange(markets, {}))
+    config = StrategyConfig(
+        symbols=["BTC/USDT"],
+        base_order_quote=10,
+        safety_order_quote=10,
+        max_safety_orders=0,
+        max_capital_per_deal=20,
+        max_total_allocation=20,
+    )
+    with pytest.raises(ValueError, match="below the market minimum amount"):
+        adapter.validate_minimum_order_sizes("BTC/USDT", config, Decimal("50000"))
