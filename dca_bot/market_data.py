@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import time
 from typing import Any
 
 import ccxt
@@ -60,12 +61,23 @@ class BinanceSpotMarketData:
         if ask is not None and (not ask.is_finite() or ask <= 0):
             ask = None
         timestamp = data.get("timestamp")
+        try:
+            timestamp_ms = int(timestamp) if timestamp is not None else None
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Exchange returned an invalid ticker timestamp") from exc
+        if timestamp_ms is None or timestamp_ms <= 0:
+            raise ValueError("Exchange ticker timestamp is missing or invalid")
+        age_ms = int(time.time() * 1000) - timestamp_ms
+        if age_ms < -60_000:
+            raise ValueError("Exchange ticker timestamp is in the future")
+        if age_ms > 120_000:
+            raise ValueError("Exchange ticker data is stale")
         return SpotTicker(
             symbol=normalized,
             last=last,
             bid=bid,
             ask=ask,
-            timestamp_ms=int(timestamp) if timestamp is not None else None,
+            timestamp_ms=timestamp_ms,
         )
 
 
