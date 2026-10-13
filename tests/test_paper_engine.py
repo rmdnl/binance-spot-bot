@@ -192,3 +192,23 @@ def test_max_deal_duration_closes_an_expired_paper_deal():
 def test_paper_engine_fails_closed_for_unimplemented_indicator_entry():
     with pytest.raises(ValueError, match="not implemented"):
         start_paper_deal(config(start_condition="ema_trend"), "BTC/USDT", D("100"))
+
+
+def test_stop_loss_gap_does_not_fill_safety_orders_after_stop_is_crossed():
+    deal = start_paper_deal(
+        config(
+            stop_loss_enabled=True,
+            stop_loss_basis="base_order",
+            stop_loss_pct=5,
+            max_safety_orders=2,
+        ),
+        "BTC/USDT",
+        D("100"),
+    )
+
+    events = update_paper_deal(deal, D("94"))
+
+    assert [event.event_type for event in events] == ["deal_closed"]
+    assert deal.close_reason == "stop_loss_or_breakeven"
+    assert deal.safety_orders_filled == 0
+    assert deal.quote_spent == D("10")
