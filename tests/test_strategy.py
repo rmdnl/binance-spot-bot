@@ -11,6 +11,9 @@ def test_strategy_defaults_to_disabled_spot_preset():
     assert config.enabled is False
     assert config.symbols == ['BTC/USDT']
     assert config.max_safety_orders == 4
+    assert config.max_active_deals == 1
+    assert config.max_capital_per_deal == 100
+    assert config.max_total_allocation == 120
 
 
 def test_symbol_normalization():
