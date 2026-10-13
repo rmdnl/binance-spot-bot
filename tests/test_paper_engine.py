@@ -212,3 +212,13 @@ def test_stop_loss_gap_does_not_fill_safety_orders_after_stop_is_crossed():
     assert deal.close_reason == "stop_loss_or_breakeven"
     assert deal.safety_orders_filled == 0
     assert deal.quote_spent == D("10")
+
+
+
+def test_paper_engine_rejects_unimplemented_balance_percentage_sizing():
+    with pytest.raises(ValueError, match="Balance-percentage sizing is not implemented"):
+        start_paper_deal(
+            config(order_size_mode="balance_percent"),
+            "BTC/USDT",
+            D("100"),
+        )
