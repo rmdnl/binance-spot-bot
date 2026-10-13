@@ -17,6 +17,8 @@ from .config import get_settings
 from .db import get_db, init_db
 from .models import AuditEvent, StrategyRecord
 from .strategy import StrategyConfig
+from .dca_math import build_dca_summary
+from .market_data import BinanceSpotMarketData
 
 BASE_DIR = Path(__file__).resolve().parent
 settings = get_settings()
@@ -97,6 +99,75 @@ def render_dashboard(request: Request, db: Session, *, saved: bool = False, erro
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "mode": settings.trading_mode, "execution": "disabled"}
+
+
+@app.get("/api/market/ticker")
+def market_ticker(request: Request, symbol: str = "BTC/USDT"):
+    """Authenticated public Binance Spot ticker lookup. Never uses trading credentials."""
+    ensure_authenticated(request)
+    try:
+        ticker = BinanceSpotMarketData().ticker(symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Binance public market data is temporarily unavailable") from exc
+    return {
+        "symbol": ticker.symbol,
+        "last": str(ticker.last),
+        "bid": str(ticker.bid) if ticker.bid is not None else None,
+        "ask": str(ticker.ask) if ticker.ask is not None else None,
+        "timestamp_ms": ticker.timestamp_ms,
+        "market": "spot",
+    }
+
+
+@app.get("/api/dca/preview")
+def dca_preview(
+    request: Request,
+    base_price: str,
+    base_order_quote: str = "10",
+    safety_order_quote: str = "10",
+    safety_order_count: int = 4,
+    initial_deviation_pct: str = "1",
+    deviation_scale: str = "1",
+    safety_volume_scale: str = "1",
+):
+    """Authenticated deterministic DCA ladder and capital preview; no orders are placed."""
+    ensure_authenticated(request)
+    from decimal import Decimal, InvalidOperation
+    try:
+        summary = build_dca_summary(
+            base_price=Decimal(base_price),
+            base_order_quote=Decimal(base_order_quote),
+            safety_order_quote=Decimal(safety_order_quote),
+            safety_order_count=safety_order_count,
+            initial_deviation_pct=Decimal(initial_deviation_pct),
+            deviation_scale=Decimal(deviation_scale),
+            safety_volume_scale=Decimal(safety_volume_scale),
+        )
+    except (ValueError, InvalidOperation) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "base_price": str(summary.base_price),
+        "base_order_quote": str(summary.base_order_quote),
+        "base_quantity": str(summary.base_quantity),
+        "safety_orders": [
+            {
+                "index": level.index,
+                "deviation_pct": str(level.deviation_pct),
+                "price": str(level.price),
+                "quote_amount": str(level.quote_amount),
+                "base_quantity": str(level.base_quantity),
+            }
+            for level in summary.safety_orders
+        ],
+        "total_quote_required": str(summary.total_quote_required),
+        "total_base_quantity": str(summary.total_base_quantity),
+        "average_entry_price": str(summary.average_entry_price),
+        "deepest_deviation_pct": str(summary.deepest_deviation_pct),
+        "average_entry_deviation_pct": str(summary.average_entry_deviation_pct),
+        "execution": "disabled",
+    }
 
 
 @app.get("/login", response_class=HTMLResponse)
