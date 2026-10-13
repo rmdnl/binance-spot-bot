@@ -166,6 +166,10 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
             except (ValueError, KeyError, TypeError, json.JSONDecodeError):
                 continue
 
+        # SQLite's legacy transaction mode may not begin a physical transaction for SELECTs.
+        # Keep per-symbol savepoints covered by the final transaction commit/rollback.
+        if session.get_bind().dialect.name == "sqlite":
+            session.connection().exec_driver_sql("BEGIN")
         exchange = BinanceSpotMarketData()
         now = time.time()
         for profile in profiles:
@@ -211,144 +215,163 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
 
             for symbol in symbols_to_scan:
                 key = (profile.id, symbol)
+                started_count = len(result["started"])
+                waited_count = len(result["waited"])
+                previous_entry = last_entry.get(key)
+                had_previous_entry = key in last_entry
+                previous_decision = last_decision.get(key)
+                had_previous_decision = key in last_decision
                 try:
-                    active_rows = session.query(PaperDealRecord).filter_by(status="active").all()
-                    active_deals = [
-                        (row, deserialize_paper_deal(row.state_json)) for row in active_rows
-                    ]
-                    strategy_deals = [item for item in active_deals if item[0].strategy_id == profile.id]
-                    symbol_deals = [item for item in strategy_deals if item[1].symbol == symbol]
-                    if config.pair_selection_mode == "automatic_usdt" and any(
-                        deal.symbol == symbol for _, deal in active_deals
-                    ):
-                        result["waited"].append({
-                            "strategy_id": profile.id,
-                            "symbol": symbol,
-                            "reason": "pair already has an active deal in another strategy",
-                        })
-                        continue
-                    if len(strategy_deals) >= config.max_active_deals:
-                        result["waited"].append({"strategy_id": profile.id, "symbol": symbol, "reason": "active deal limit"})
-                        continue
-                    if len(symbol_deals) >= config.max_active_deals_per_symbol:
-                        result["waited"].append({"strategy_id": profile.id, "symbol": symbol, "reason": "pair already has an active deal"})
-                        continue
+                    with session.begin_nested():
+                        active_rows = session.query(PaperDealRecord).filter_by(status="active").all()
+                        active_deals = [
+                            (row, deserialize_paper_deal(row.state_json)) for row in active_rows
+                        ]
+                        strategy_deals = [item for item in active_deals if item[0].strategy_id == profile.id]
+                        symbol_deals = [item for item in strategy_deals if item[1].symbol == symbol]
+                        if config.pair_selection_mode == "automatic_usdt" and any(
+                            deal.symbol == symbol for _, deal in active_deals
+                        ):
+                            result["waited"].append({
+                                "strategy_id": profile.id,
+                                "symbol": symbol,
+                                "reason": "pair already has an active deal in another strategy",
+                            })
+                            continue
+                        if len(strategy_deals) >= config.max_active_deals:
+                            result["waited"].append({"strategy_id": profile.id, "symbol": symbol, "reason": "active deal limit"})
+                            continue
+                        if len(symbol_deals) >= config.max_active_deals_per_symbol:
+                            result["waited"].append({"strategy_id": profile.id, "symbol": symbol, "reason": "pair already has an active deal"})
+                            continue
 
-                    limit = min(1000, max(config.ema_slow + 50, config.atr_period * 3 + 10, 300))
-                    candles = exchange.candles(symbol, config.timeframe, limit=limit)
-                    if len(candles) < 2:
-                        raise ValueError("Not enough closed Spot candles")
-                    closed_candles = candles[:-1]  # Do not make a decision on the still-forming candle.
-                    candle_timestamp_ms = int(closed_candles[-1][0])
-                    timeframe_seconds = {
-                        "1m": 60, "3m": 180, "5m": 300, "15m": 900,
-                        "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400,
-                        "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400,
-                    }.get(config.timeframe)
-                    if timeframe_seconds is None:
-                        raise ValueError("Unsupported timeframe for candle freshness validation")
-                    candle_age_seconds = now - (candle_timestamp_ms / 1000)
-                    if candle_age_seconds < -60 or candle_age_seconds > timeframe_seconds * 2:
-                        raise ValueError("Latest closed candle is stale or has a future timestamp")
-                    prior = last_decision.get(key, {})
-                    if prior.get("candle_timestamp_ms") == candle_timestamp_ms:
-                        continue
+                        limit = min(1000, max(config.ema_slow + 50, config.atr_period * 3 + 10, 300))
+                        candles = exchange.candles(symbol, config.timeframe, limit=limit)
+                        if len(candles) < 2:
+                            raise ValueError("Not enough closed Spot candles")
+                        closed_candles = candles[:-1]  # Do not make a decision on the still-forming candle.
+                        candle_timestamp_ms = int(closed_candles[-1][0])
+                        timeframe_seconds = {
+                            "1m": 60, "3m": 180, "5m": 300, "15m": 900,
+                            "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400,
+                            "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400,
+                        }.get(config.timeframe)
+                        if timeframe_seconds is None:
+                            raise ValueError("Unsupported timeframe for candle freshness validation")
+                        candle_age_seconds = now - (candle_timestamp_ms / 1000)
+                        if candle_age_seconds < -60 or candle_age_seconds > timeframe_seconds * 2:
+                            raise ValueError("Latest closed candle is stale or has a future timestamp")
+                        prior = last_decision.get(key, {})
+                        if prior.get("candle_timestamp_ms") == candle_timestamp_ms:
+                            continue
 
-                    decision = analyze_market(symbol, config.timeframe, closed_candles, config)
-                    action = decision.action
-                    reason = decision.reason
-                    params = decision.parameters
-                    if action == "candidate":
-                        last_started = last_entry.get(key, 0.0)
-                        if now - last_started < config.cooldown_seconds:
-                            action, reason = "wait", "Configured cooldown has not elapsed"
-                        else:
-                            required = float(params.get("estimated_deal_capital_quote", float("inf")))
-                            used_capacity = reserved_capital_quote(
-                                [deal for _, deal in strategy_deals]
-                            )
-                            new_reservation = D(str(config.max_capital_per_deal))
-                            total_cap = D(str(config.max_total_allocation))
-                            if used_capacity + new_reservation > total_cap:
-                                action, reason = "wait", "Total allocation cap would be exceeded by active and new deal reservations"
-                            elif not params.get("capital_safe", False):
-                                action, reason = "wait", "Adaptive DCA ladder exceeds the capital cap"
+                        decision = analyze_market(symbol, config.timeframe, closed_candles, config)
+                        action = decision.action
+                        reason = decision.reason
+                        params = decision.parameters
+                        if action == "candidate":
+                            last_started = last_entry.get(key, 0.0)
+                            if now - last_started < config.cooldown_seconds:
+                                action, reason = "wait", "Configured cooldown has not elapsed"
                             else:
-                                adaptive_config = config.model_copy(update={
-                                    "symbols": [symbol],
-                                    "start_condition": "immediately",
-                                    "entry_filter": "none",
-                                    "initial_deviation_pct": float(params["initial_deviation_pct"]),
-                                    "deviation_scale": float(params["deviation_scale"]),
-                                    "take_profit_pct": float(params["take_profit_pct"]),
-                                    "max_safety_orders": int(params["max_safety_orders"]),
-                                    "safety_order_volume_scale": float(params["safety_order_volume_scale"]),
-                                })
-                                price = float(closed_candles[-1][4])
-                                deal = start_paper_deal(adaptive_config, symbol, price)
-                                session.add(PaperDealRecord(
-                                    id=deal.id,
-                                    strategy_id=profile.id,
-                                    symbol=deal.symbol,
-                                    status=deal.status,
-                                    state_json=serialize_paper_deal(deal),
-                                ))
-                                started_at = time.time()
-                                last_entry[key] = started_at
-                                result["started"].append({
-                                    "strategy_id": profile.id,
-                                    "symbol": symbol,
-                                    "deal": deal.snapshot(),
-                                })
-                                session.add(AuditEvent(
-                                    event_type="autonomous_entry_started",
-                                    detail=json.dumps({
+                                required = float(params.get("estimated_deal_capital_quote", float("inf")))
+                                used_capacity = reserved_capital_quote(
+                                    [deal for _, deal in strategy_deals]
+                                )
+                                new_reservation = D(str(config.max_capital_per_deal))
+                                total_cap = D(str(config.max_total_allocation))
+                                if used_capacity + new_reservation > total_cap:
+                                    action, reason = "wait", "Total allocation cap would be exceeded by active and new deal reservations"
+                                elif not params.get("capital_safe", False):
+                                    action, reason = "wait", "Adaptive DCA ladder exceeds the capital cap"
+                                else:
+                                    adaptive_config = config.model_copy(update={
+                                        "symbols": [symbol],
+                                        "start_condition": "immediately",
+                                        "entry_filter": "none",
+                                        "initial_deviation_pct": float(params["initial_deviation_pct"]),
+                                        "deviation_scale": float(params["deviation_scale"]),
+                                        "take_profit_pct": float(params["take_profit_pct"]),
+                                        "max_safety_orders": int(params["max_safety_orders"]),
+                                        "safety_order_volume_scale": float(params["safety_order_volume_scale"]),
+                                    })
+                                    price = float(closed_candles[-1][4])
+                                    deal = start_paper_deal(adaptive_config, symbol, price)
+                                    session.add(PaperDealRecord(
+                                        id=deal.id,
+                                        strategy_id=profile.id,
+                                        symbol=deal.symbol,
+                                        status=deal.status,
+                                        state_json=serialize_paper_deal(deal),
+                                    ))
+                                    started_at = time.time()
+                                    last_entry[key] = started_at
+                                    result["started"].append({
                                         "strategy_id": profile.id,
                                         "symbol": symbol,
-                                        "deal_id": deal.id,
-                                        "started_at_epoch": started_at,
-                                        "candle_timestamp_ms": candle_timestamp_ms,
-                                        "parameters": params,
-                                    }),
-                                ))
-                    detail = {
-                        "strategy_id": profile.id,
-                        "symbol": symbol,
-                        "timeframe": config.timeframe,
-                        "candle_timestamp_ms": candle_timestamp_ms,
-                        "evaluated_at_epoch": now,
-                        "action": action,
-                        "reason": reason,
-                        "score": decision.score,
-                        "indicators": {
-                            "close": decision.indicators.close,
-                            "ema_fast": decision.indicators.ema_fast,
-                            "ema_slow": decision.indicators.ema_slow,
-                            "rsi": decision.indicators.rsi,
-                            "atr_pct": decision.indicators.atr_pct,
-                            "adx": decision.indicators.adx,
-                        },
-                        "parameters": params,
-                    }
-                    session.add(AuditEvent(
-                        event_type="autonomous_decision",
-                        detail=json.dumps(detail),
-                    ))
-                    last_decision[key] = detail
-                    if action != "candidate":
-                        result["waited"].append({
+                                        "deal": deal.snapshot(),
+                                    })
+                                    session.add(AuditEvent(
+                                        event_type="autonomous_entry_started",
+                                        detail=json.dumps({
+                                            "strategy_id": profile.id,
+                                            "symbol": symbol,
+                                            "deal_id": deal.id,
+                                            "started_at_epoch": started_at,
+                                            "candle_timestamp_ms": candle_timestamp_ms,
+                                            "parameters": params,
+                                        }),
+                                    ))
+                        detail = {
                             "strategy_id": profile.id,
                             "symbol": symbol,
+                            "timeframe": config.timeframe,
+                            "candle_timestamp_ms": candle_timestamp_ms,
+                            "evaluated_at_epoch": now,
+                            "action": action,
                             "reason": reason,
                             "score": decision.score,
-                        })
+                            "indicators": {
+                                "close": decision.indicators.close,
+                                "ema_fast": decision.indicators.ema_fast,
+                                "ema_slow": decision.indicators.ema_slow,
+                                "rsi": decision.indicators.rsi,
+                                "atr_pct": decision.indicators.atr_pct,
+                                "adx": decision.indicators.adx,
+                            },
+                            "parameters": params,
+                        }
+                        session.add(AuditEvent(
+                            event_type="autonomous_decision",
+                            detail=json.dumps(detail),
+                        ))
+                        last_decision[key] = detail
+                        if action != "candidate":
+                            result["waited"].append({
+                                "strategy_id": profile.id,
+                                "symbol": symbol,
+                                "reason": reason,
+                                "score": decision.score,
+                            })
+
                 except Exception as exc:
+                    del result["started"][started_count:]
+                    del result["waited"][waited_count:]
+                    if had_previous_entry:
+                        last_entry[key] = previous_entry
+                    else:
+                        last_entry.pop(key, None)
+                    if had_previous_decision:
+                        last_decision[key] = previous_decision
+                    else:
+                        last_decision.pop(key, None)
                     logger.warning("Autonomous paper scan failed for strategy %s / %s: %s", profile.id, symbol, exc)
                     result["failures"].append({
                         "strategy_id": profile.id,
                         "symbol": symbol,
-                        "error": "Market analysis or paper entry failed; no exchange order was sent",
+                        "error": "Market analysis or paper entry failed; changes for this pair were rolled back",
                     })
+
         session.commit()
         return result
     except Exception:
