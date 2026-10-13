@@ -1,6 +1,7 @@
 from dca_bot.autonomous import analyze_market, calculate_indicators
 from dca_bot.strategy import StrategyConfig
 import pytest
+import time
 
 
 def config(**overrides):
@@ -22,10 +23,11 @@ def config(**overrides):
 
 def candles_from_closes(closes):
     candles = []
+    start_timestamp = int(time.time() * 1000) - len(closes) * 60_000
     for index, close in enumerate(closes):
         close = float(close)
         candles.append([
-            index * 60_000,
+            start_timestamp + index * 60_000,
             close * 0.999,
             close * 1.01,
             close * 0.99,
@@ -171,3 +173,39 @@ def test_autonomous_engine_rejects_inconsistent_ohlc_data():
     candles[-1][2] = candles[-1][4] * 0.5  # high below close is invalid
     with pytest.raises(ValueError, match="inconsistent high/low"):
         calculate_indicators(candles, config())
+
+
+def test_autonomous_scanner_rejects_stale_closed_candles(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from dca_bot.db import Base
+    from dca_bot.models import PaperDealRecord, StrategyRecord
+    from dca_bot import worker
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    try:
+        cfg = config(start_condition="autonomous", symbols=["BTC/USDT"], timeframe="1h")
+        session.add(StrategyRecord(name=cfg.name, config_json=cfg.model_dump_json(), enabled=True))
+        session.commit()
+
+        stale_candles = candles_from_closes([200 - i * 0.2 for i in range(350)])
+        stale_by_ms = int((time.time() - 7 * 24 * 60 * 60) * 1000)
+        for index, candle in enumerate(stale_candles):
+            candle[0] = stale_by_ms + index * 60_000
+
+        class StaleMarketData:
+            def candles(self, symbol, timeframe, limit=500):
+                return stale_candles[-limit:]
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", StaleMarketData)
+        result = worker.scan_autonomous_strategies(session)
+
+        assert result["started"] == []
+        assert len(result["failures"]) == 1
+        assert session.query(PaperDealRecord).count() == 0
+    finally:
+        session.close()
+        engine.dispose()
