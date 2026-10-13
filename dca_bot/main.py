@@ -15,10 +15,17 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import is_authenticated, verify_password
 from .config import get_settings
 from .db import get_db, init_db
-from .models import AuditEvent, StrategyRecord
+from .models import AuditEvent, PaperDealRecord, StrategyRecord
 from .strategy import StrategyConfig
 from .dca_math import build_dca_summary
 from .market_data import BinanceSpotMarketData
+from decimal import Decimal as D
+from .paper_engine import (
+    deserialize_paper_deal,
+    serialize_paper_deal,
+    start_paper_deal,
+    update_paper_deal,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 settings = get_settings()
@@ -172,6 +179,112 @@ def dca_preview(
         "average_entry_deviation_pct": str(summary.average_entry_deviation_pct),
         "execution": "disabled",
     }
+
+
+@app.get("/api/paper/deals")
+def paper_deals(request: Request, db: Session = Depends(get_db)):
+    ensure_authenticated(request)
+    rows = db.query(PaperDealRecord).order_by(PaperDealRecord.created_at.desc()).all()
+    result = []
+    for row in rows:
+        try:
+            deal = deserialize_paper_deal(row.state_json)
+        except (ValueError, KeyError, TypeError):
+            continue
+        snapshot = deal.snapshot()
+        if deal.status == "active":
+            proceeds = deal.base_quantity * deal.last_price
+            exit_fee = proceeds * D(str(deal.config.fee_rate_pct_per_side)) / D("100")
+            snapshot["unrealized_pnl_quote"] = str(
+                proceeds - deal.quote_spent - deal.entry_fees_quote - exit_fee
+            )
+        else:
+            snapshot["unrealized_pnl_quote"] = "0"
+        result.append(snapshot)
+    return {"deals": result, "execution": "paper"}
+
+
+@app.post("/api/paper/deals/start")
+def paper_deal_start(
+    request: Request,
+    csrf: str = Form(..., alias="csrf_token"),
+    strategy_id: int = Form(...),
+    symbol: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    ensure_authenticated(request)
+    check_csrf(request, csrf)
+    record = db.get(StrategyRecord, strategy_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    try:
+        config = StrategyConfig.model_validate_json(record.config_json)
+        normalized = StrategyConfig.normalize_symbols([symbol])[0]
+        active_rows = db.query(PaperDealRecord).filter_by(status="active").all()
+        strategy_active = 0
+        symbol_active = 0
+        for active_row in active_rows:
+            active_deal = deserialize_paper_deal(active_row.state_json)
+            if active_row.strategy_id == strategy_id:
+                strategy_active += 1
+                if active_deal.symbol == normalized:
+                    symbol_active += 1
+        if strategy_active >= config.max_active_deals:
+            raise ValueError("Maximum active deals for this strategy reached")
+        if symbol_active >= config.max_active_deals_per_symbol:
+            raise ValueError("Maximum active deals for this pair reached")
+        ticker = BinanceSpotMarketData().ticker(normalized)
+        deal = start_paper_deal(config, normalized, ticker.last)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Could not start paper deal because Spot market data is unavailable") from exc
+    db.add(PaperDealRecord(
+        id=deal.id,
+        strategy_id=strategy_id,
+        symbol=deal.symbol,
+        status=deal.status,
+        state_json=serialize_paper_deal(deal),
+    ))
+    db.add(AuditEvent(
+        event_type="paper_deal_started",
+        detail=json.dumps({"deal_id": deal.id, "strategy_id": strategy_id, "symbol": deal.symbol, "base_price": str(deal.base_price)}),
+    ))
+    db.commit()
+    return {"deal": deal.snapshot(), "execution": "paper", "orders_sent_to_exchange": False}
+
+
+@app.post("/api/paper/deals/tick")
+def paper_deal_tick(
+    request: Request,
+    csrf: str = Form(..., alias="csrf_token"),
+    db: Session = Depends(get_db),
+):
+    ensure_authenticated(request)
+    check_csrf(request, csrf)
+    rows = db.query(PaperDealRecord).filter_by(status="active").all()
+    exchange = BinanceSpotMarketData()
+    tickers = {}
+    changed = []
+    failures = []
+    for row in rows:
+        try:
+            deal = deserialize_paper_deal(row.state_json)
+            if deal.symbol not in tickers:
+                tickers[deal.symbol] = exchange.ticker(deal.symbol).last
+            events = update_paper_deal(deal, tickers[deal.symbol])
+            row.status = deal.status
+            row.state_json = serialize_paper_deal(deal)
+            changed.append({"deal": deal.snapshot(), "events": [event.event_type for event in events]})
+            if events:
+                db.add(AuditEvent(
+                    event_type="paper_deal_updated",
+                    detail=json.dumps({"deal_id": deal.id, "symbol": deal.symbol, "events": [event.event_type for event in events], "status": deal.status}),
+                ))
+        except Exception:
+            failures.append({"deal_id": row.id, "symbol": row.symbol, "error": "Market update or state processing failed"})
+    db.commit()
+    return {"updated": changed, "failures": failures, "execution": "paper", "orders_sent_to_exchange": False}
 
 
 @app.get("/login", response_class=HTMLResponse)
