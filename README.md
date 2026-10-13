@@ -6,7 +6,7 @@ A self-hosted Binance **Spot-only** DCA trading dashboard inspired by the workfl
 
 ## Current implementation status
 
-The dashboard now has an authenticated read-only Binance Spot ticker endpoint and a DCA ladder/capital preview for fixed quote or fixed coin sizing. Strategy configuration includes initial controls for DCA mode, take-profit basis, stop-loss basis, breakeven, reinvestment and maximum deal duration. These settings are configuration scaffolding, not a running trading engine. No order placement is available yet.
+The dashboard has authenticated read-only Binance Spot ticker and OHLCV analysis endpoints, plus a DCA ladder/capital preview. The autonomous engine calculates EMA, RSI, ATR and ADX, recommends volatility-aware DCA spacing/TP, and blocks entries when the long-only trend or capital checks fail. In paper mode, explicitly enabled profiles using `Autonomous paper mode` are scanned on closed candles and may open simulated deals. This is paper execution only: no exchange orders are submitted.
 
 See [FEATURE_PARITY.md](FEATURE_PARITY.md) for the target feature matrix and delivery gates, and [DEPLOYMENT.md](DEPLOYMENT.md) for the recommended Cloudflare Tunnel + Access setup.
 
@@ -45,7 +45,7 @@ Target dashboard address: `http://127.0.0.1:8082` when accessed locally. For rem
 
 ## Development status
 
-The current scaffold includes a responsive dashboard, password login, editable strategy profiles, SQLite persistence, initial risk validation helpers, a password-hash setup utility, VPS deployment notes, and GitHub Actions CI. Automated checks have passed during development. The dashboard now includes a deterministic paper deal engine with persisted state, automatic public-price polling in paper mode, safety-order fills, average-entry tracking, take-profit/trailing/stop-loss handling and fee-aware simulated PnL. Binance Testnet order execution, exchange-order reconciliation and live trading remain future work. Consult [DEPLOYMENT.md](DEPLOYMENT.md) before installing.
+The current scaffold includes a responsive dashboard, password login, editable strategy profiles, SQLite persistence, initial risk validation helpers, a password-hash setup utility, VPS deployment notes, and GitHub Actions CI. Automated checks have passed during development. The dashboard includes a deterministic paper deal engine with persisted state, public-price polling, safety-order fills, average-entry tracking, TP/trailing/SL/breakeven, fee-aware simulated PnL, and an autonomous closed-candle scanner with candle-level idempotency and adaptive DCA parameters. Binance Spot Testnet order execution, exchange-order reconciliation, complete balance/risk dashboards, and live trading remain future work. Autonomous profiles are still simulations and do not establish profitability. Consult [DEPLOYMENT.md](DEPLOYMENT.md) before installing.
 
 ## License
 
