@@ -204,18 +204,27 @@ def analyze_market(
         + 2 * config.fee_rate_pct_per_side
         + 2 * config.slippage_pct_per_side
     )
-    desired_take_profit = max(
-        config.take_profit_pct,
-        minimum_net_target_pct,
-        indicators.atr_pct * 0.8,
+    # Keep ordinary targets close enough to market to encourage completed cycles.
+    # The 5% hard ceiling is only available when the configured net-profit floor
+    # plus estimated round-trip costs genuinely requires a target above 3%.
+    adaptive_base_target = _bounded(
+        max(config.take_profit_pct, indicators.atr_pct * 0.8),
+        0.5,
+        3.0,
     )
-    # StrategyConfig permits targets up to 100%. Do not silently clamp a user's
-    # configured target (or the minimum net target) to 5%, which can make the
-    # paper engine reject every otherwise valid candidate.
-    if desired_take_profit > 100.0:
+    if minimum_net_target_pct > 5.0:
         action = "wait"
-        reason = "Required take-profit exceeds the supported 100% strategy limit"
-    take_profit = _bounded(desired_take_profit, 0.5, 100.0)
+        reason = (
+            "Minimum net-profit requirement plus estimated fees/slippage exceeds "
+            "the 5% take-profit hard cap"
+        )
+        take_profit = 5.0
+    else:
+        take_profit = _bounded(
+            max(adaptive_base_target, minimum_net_target_pct),
+            0.5,
+            5.0,
+        )
     safe_count = min(config.max_safety_orders, 8)
     parameters: dict[str, object] = {
         "initial_deviation_pct": initial_deviation,
