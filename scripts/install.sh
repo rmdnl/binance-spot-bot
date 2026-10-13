@@ -16,11 +16,19 @@ cd "${APP_DIR}"
 mkdir -p data logs
 chmod 700 data logs
 
+if [[ -L .env ]]; then
+  echo ".env must be a regular file, not a symlink." >&2
+  exit 1
+fi
+
 if [[ ! -f .env ]]; then
   cp .env.example .env
-  chmod 600 .env
   echo "Created .env from the safe template. Set APP_SECRET_KEY and ADMIN_PASSWORD_HASH before running in production." >&2
 fi
+
+# Existing .env files may have been created manually with permissive modes.
+# Always enforce owner-only access before installing dependencies or starting the app.
+chmod 600 .env
 
 .venv/bin/python -m compileall -q dca_bot
 .venv/bin/pytest
