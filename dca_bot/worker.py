@@ -353,9 +353,9 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                                         "safety_order_volume_scale": float(params["safety_order_volume_scale"]),
                                     })
                                     price = float(closed_candles[-1][4])
-                                    validator = getattr(exchange, "validate_minimum_order_sizes", None)
-                                    if callable(validator):
-                                        validator(symbol, adaptive_config, price)
+                                    # Minimum-order metadata is a required preflight. Do not
+                                    # silently bypass it if the adapter is missing the validator.
+                                    exchange.validate_minimum_order_sizes(symbol, adaptive_config, price)
                                     deal = start_paper_deal(adaptive_config, symbol, price)
                                     session.add(PaperDealRecord(
                                         id=deal.id,
