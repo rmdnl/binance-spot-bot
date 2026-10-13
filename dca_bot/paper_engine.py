@@ -166,7 +166,7 @@ def _close(deal: PaperDeal, price: Decimal, reason: str) -> PaperEvent:
         event_type="deal_closed",
         detail=reason,
         price=price,
-        quote_amount=proceeds,
+        quote_amount=deal.base_quantity * price,
         base_quantity=deal.base_quantity,
     )
     deal.events.append(event)
