@@ -182,3 +182,19 @@ def test_strategy_risk_guard_blocks_daily_loss_without_drawdown_trip():
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_strategy_risk_guard_fails_closed_on_persisted_status_mismatch():
+    engine, session = _risk_test_session()
+    try:
+        from dca_bot.models import PaperDealRecord
+        strategy = _insert_closed_loss(session, _risk_test_strategy(daily_loss_limit_quote=100))
+        row = session.query(PaperDealRecord).filter_by(strategy_id=strategy.id).one()
+        row.status = "active"  # serialized state remains closed
+        session.flush()
+        with pytest.raises(ValueError, match="status mismatch"):
+            strategy_risk_status(session, strategy)
+    finally:
+        session.close()
+        engine.dispose()
