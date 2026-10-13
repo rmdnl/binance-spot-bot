@@ -413,7 +413,7 @@ def paper_risk_status(request: Request, db: Session = Depends(get_db)):
         "risk_model": "virtual_paper_equity",
         "mark_source": "last persisted paper-deal price",
         "daily_loss_timezone": "UTC",
-        "entries_enabled": not any(item["blocked"] for item in result),
+        "entries_enabled": (not any(item["blocked"] for item in result)) and shared_capital["within_limit"] == "true",
         "strategies": result,
         "execution": "paper",
     }
