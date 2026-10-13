@@ -939,3 +939,40 @@ def test_autonomous_history_fails_closed_on_corrupt_legacy_audit_event():
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_autonomous_scanner_blocks_unimplemented_balance_percentage_sizing(monkeypatch):
+    engine, session = _session()
+    try:
+        config = _config().model_copy(update={
+            "start_condition": "autonomous",
+            "entry_filter": "none",
+            "pair_selection_mode": "automatic_usdt",
+            "order_size_mode": "balance_percent",
+        })
+        strategy = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=True,
+        )
+        session.add(strategy)
+        session.commit()
+
+        class UnexpectedMarketData:
+            def discover_usdt_symbols(self, **kwargs):
+                raise AssertionError("unsupported sizing must block before discovery")
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", UnexpectedMarketData)
+        result = worker.scan_autonomous_strategies(session)
+
+        assert result["started"] == []
+        assert any(
+            item["strategy_id"] == strategy.id
+            and "Balance-percentage sizing is not implemented" in item["reason"]
+            for item in result["waited"]
+        )
+        assert session.query(PaperDealRecord).count() == 0
+    finally:
+        session.close()
+        engine.dispose()
