@@ -120,6 +120,39 @@ class BinanceSpotMarketData:
                 or not min_cost.is_finite() or min_cost < 0):
             raise ValueError(f"{normalized} has invalid Binance minimum-order metadata")
 
+        info = market.get("info") or {}
+        filters = info.get("filters") or []
+        filter_map = {
+            str(item.get("filterType")): item
+            for item in filters
+            if isinstance(item, dict) and item.get("filterType")
+        }
+        lot_filter = filter_map.get("LOT_SIZE")
+        price_filter = filter_map.get("PRICE_FILTER")
+        if not isinstance(lot_filter, dict) or not isinstance(price_filter, dict):
+            raise ValueError(f"{normalized} Binance LOT_SIZE/PRICE_FILTER metadata is unavailable; entry blocked")
+        try:
+            amount_step = Decimal(str(lot_filter["stepSize"]))
+            filter_min_amount = Decimal(str(lot_filter["minQty"]))
+            filter_max_amount = Decimal(str(lot_filter["maxQty"]))
+            price_tick = Decimal(str(price_filter["tickSize"]))
+            filter_min_price = Decimal(str(price_filter["minPrice"]))
+            filter_max_price = Decimal(str(price_filter["maxPrice"]))
+        except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError(f"{normalized} Binance precision metadata is invalid; entry blocked") from exc
+        metadata_values = (
+            amount_step, filter_min_amount, filter_max_amount,
+            price_tick, filter_min_price, filter_max_price,
+        )
+        if any(not value.is_finite() or value < 0 for value in metadata_values):
+            raise ValueError(f"{normalized} Binance precision metadata is invalid; entry blocked")
+        if amount_step <= 0 or price_tick <= 0 or filter_max_amount <= 0 or filter_max_price <= 0:
+            raise ValueError(f"{normalized} Binance precision metadata is invalid; entry blocked")
+        min_amount = max(min_amount, filter_min_amount)
+
+        def floor_step(value: Decimal, step: Decimal) -> Decimal:
+            return (value // step) * step
+
         summary = build_dca_summary(
             base_price=price0,
             base_order_quote=Decimal(str(config.base_order_quote)),
@@ -132,21 +165,33 @@ class BinanceSpotMarketData:
             safety_order_base_quantity=Decimal(str(config.safety_order_base_quantity)),
             dca_mode=config.dca_mode,
         )
-        planned_orders = [("base order", summary.base_quote_amount, summary.base_quantity)]
+        planned_orders = [("base order", price0, summary.base_quote_amount, summary.base_quantity)]
         planned_orders.extend(
-            (f"safety order {level.index}", level.quote_amount, level.base_quantity)
+            (f"safety order {level.index}", level.price, level.quote_amount, level.base_quantity)
             for level in summary.safety_orders
         )
-        for label, quote_amount, base_quantity in planned_orders:
-            if quote_amount < min_cost:
+        for label, order_price, quote_amount, base_quantity in planned_orders:
+            rounded_price = floor_step(order_price, price_tick)
+            rounded_quantity = floor_step(base_quantity, amount_step)
+            if rounded_price <= 0 or rounded_price < filter_min_price or rounded_price > filter_max_price:
                 raise ValueError(
-                    f"{normalized} {label} quote value {quote_amount} USDT is below "
-                    f"the market minimum cost {min_cost} USDT"
+                    f"{normalized} {label} price cannot satisfy Binance PRICE_FILTER"
                 )
-            if base_quantity < min_amount:
+            if rounded_quantity < min_amount:
                 raise ValueError(
-                    f"{normalized} {label} quantity {base_quantity} is below "
-                    f"the market minimum amount {min_amount}"
+                    f"{normalized} {label} quantity after LOT_SIZE step rounding "
+                    f"({rounded_quantity}) is below the market minimum amount {min_amount}"
+                )
+            if rounded_quantity > filter_max_amount:
+                raise ValueError(
+                    f"{normalized} {label} quantity after LOT_SIZE step rounding "
+                    f"({rounded_quantity}) exceeds Binance maximum amount {filter_max_amount}"
+                )
+            rounded_cost = rounded_price * rounded_quantity
+            if rounded_cost < min_cost:
+                raise ValueError(
+                    f"{normalized} {label} quote value after price/quantity rounding "
+                    f"({rounded_cost} USDT) is below the market minimum cost {min_cost} USDT"
                 )
 
 
