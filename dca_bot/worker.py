@@ -21,6 +21,7 @@ from .entry_guard import serialized_entry
 logger = logging.getLogger(__name__)
 
 
+@serialized_entry
 def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[str, Any]]]:
     """Poll each active symbol once and persist the deterministic paper state transitions."""
     owns_session = db is None
@@ -149,6 +150,7 @@ def _fresh_closed_candles(exchange: BinanceSpotMarketData, symbol: str, config: 
     return closed_candles, candle_timestamp_ms
 
 
+@serialized_entry
 def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
     """Evaluate enabled autonomous profiles and open paper deals only on a fresh closed candle."""
     owns_session = db is None
