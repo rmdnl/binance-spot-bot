@@ -302,6 +302,34 @@ def test_minimum_order_validation_blocks_when_binance_precision_filters_are_miss
         adapter.validate_minimum_order_sizes("BTC/USDT", config, Decimal("50000"))
 
 
+def test_minimum_order_validation_uses_stricter_binance_notional_filter():
+    from dca_bot.strategy import StrategyConfig
+
+    markets = {
+        "BTC/USDT": {
+            "spot": True,
+            "active": True,
+            "info": {"filters": [
+                {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
+                {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "10000000", "tickSize": "0.01"},
+                {"filterType": "MIN_NOTIONAL", "minNotional": "10", "applyToMarket": True, "avgPriceMins": 5},
+            ]},
+            "limits": {"amount": {"min": 0.00001}, "cost": {"min": 5}},
+        }
+    }
+    adapter = BinanceSpotMarketData(FakeExchange(markets, {}))
+    config = StrategyConfig(
+        symbols=["BTC/USDT"],
+        base_order_quote=8,
+        safety_order_quote=1,
+        max_safety_orders=0,
+        max_capital_per_deal=10,
+        max_total_allocation=10,
+    )
+    with pytest.raises(ValueError, match="below the market minimum cost 10"):
+        adapter.validate_minimum_order_sizes("BTC/USDT", config, Decimal("100"))
+
+
 def test_minimum_order_validation_checks_minimum_cost_after_step_rounding():
     from dca_bot.strategy import StrategyConfig
 
