@@ -45,6 +45,34 @@ def test_paper_deal_fills_safety_orders_as_price_crosses_levels():
     assert deal.average_entry_price < D("100")
 
 
+def test_full_dca_cycle_averages_down_then_exits_on_recovery():
+    deal = start_paper_deal(config(), "BTC/USDT", D("100"))
+    base_average = deal.average_entry_price
+
+    # Price falls through both planned safety-order levels.
+    fills = update_paper_deal(deal, D("97"))
+    assert [event.event_type for event in fills] == [
+        "safety_order_filled",
+        "safety_order_filled",
+    ]
+    assert deal.safety_orders_filled == 2
+    assert deal.average_entry_price < base_average
+    assert deal.quote_spent == D("30")
+
+    # Recovery is measured against the new weighted average entry.
+    recovery_price = deal.average_entry_price * D("1.02")
+    exits = update_paper_deal(deal, recovery_price)
+    assert exits[-1].event_type == "deal_closed"
+    assert deal.status == "closed"
+    assert deal.close_reason == "take_profit"
+    assert deal.exit_price == recovery_price
+    assert deal.realized_pnl_quote > 0
+    assert deal.entry_fees_quote > 0
+    # Repeated polling after close must not double count a fill or exit.
+    assert update_paper_deal(deal, D("110")) == []
+    assert deal.realized_pnl_quote > 0
+
+
 def test_paper_deal_closes_at_take_profit_and_accounts_for_fees():
     deal = start_paper_deal(config(max_safety_orders=0), "BTC/USDT", D("100"))
     events = update_paper_deal(deal, D("102"))
