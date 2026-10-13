@@ -109,3 +109,25 @@ def test_manual_fixed_coin_profile_still_requires_reference_price():
 
     with pytest.raises(ValueError, match="positive reference price"):
         main.estimate_profile_capital(config, None)
+
+
+
+def test_automatic_fixed_quote_profile_can_use_adaptive_ladder_within_cap():
+    config = StrategyConfig(
+        pair_selection_mode="automatic_usdt",
+        averaging_method="fixed_order_value",
+        base_order_quote=10,
+        safety_order_quote=100,
+        max_safety_orders=4,
+        safety_order_volume_scale=2,
+        max_capital_per_deal=200,
+        max_total_allocation=600,
+        max_active_deals=3,
+    )
+
+    required, total_capacity = main.estimate_profile_capital(config, None)
+
+    # The configured maximum ladder exceeds 200 USDT, but the autonomous
+    # analyzer can reduce safety-order count per candidate before opening.
+    assert required is None
+    assert total_capacity == 600
