@@ -13,7 +13,7 @@ from .market_data import BinanceSpotMarketData
 from .autonomous import analyze_market
 from .models import AuditEvent, PaperDealRecord, StrategyRecord
 from .strategy import StrategyConfig
-from .paper_engine import deserialize_paper_deal, serialize_paper_deal, update_paper_deal
+from .paper_engine import deserialize_paper_deal, serialize_paper_deal, start_paper_deal, update_paper_deal
 
 logger = logging.getLogger(__name__)
 
