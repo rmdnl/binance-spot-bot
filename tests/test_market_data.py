@@ -215,7 +215,7 @@ def test_minimum_order_validation_rejects_quantity_below_market_min_amount():
                 {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000", "stepSize": "0.00001"},
                 {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "10000000", "tickSize": "0.01"},
             ]},
-            "limits": {"amount": {"min": 0.00001}, "cost": {"min": 0}},
+            "limits": {"amount": {"min": 0.01}, "cost": {"min": 0}},
         }
     }
     adapter = BinanceSpotMarketData(FakeExchange(markets, {}))
