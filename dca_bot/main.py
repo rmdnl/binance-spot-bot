@@ -229,6 +229,7 @@ def save_strategy(
     request: Request,
     csrf: str = Form(..., alias="csrf_token"),
     strategy_id: str = Form(""),
+    reference_price: str = Form(""),
     name: str = Form(...),
     symbols: str = Form(...),
     base_order_quote: float = Form(...),
@@ -334,13 +335,14 @@ def save_strategy(
             reconciliation_seconds=reconciliation_seconds,
             order_type=order_type,
         )
-        required_capital = config.estimated_max_deal_capital()
+        price_for_estimate = float(reference_price) if reference_price.strip() else None
+        required_capital = config.estimated_max_deal_capital(price_for_estimate)
         if required_capital > config.max_capital_per_deal:
             raise ValueError(
                 f"Estimated deal capital ({required_capital:.2f} USDT) exceeds "
                 f"max capital per deal ({config.max_capital_per_deal:.2f} USDT)."
             )
-        total_capacity = config.estimated_total_capacity()
+        total_capacity = config.estimated_total_capacity(price_for_estimate)
         if config.max_capital_per_deal * config.max_active_deals > config.max_total_allocation:
             raise ValueError(
                 "Max capital per deal multiplied by active deals exceeds total allocation cap."
