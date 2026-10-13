@@ -13,12 +13,22 @@ class StrategyConfig(BaseModel):
     base_order_quote: float = Field(default=10.0, gt=0, le=1_000_000)
     base_order_balance_pct: float = Field(default=1.0, gt=0, le=100)
     safety_order_quote: float = Field(default=10.0, gt=0, le=1_000_000)
-    max_safety_orders: int = Field(default=4, ge=0, le=20)
+    max_safety_orders: int = Field(default=4, ge=0, le=30)
     safety_order_volume_scale: float = Field(default=1.5, ge=1.0, le=10.0)
     initial_deviation_pct: float = Field(default=1.0, gt=0, le=50)
     deviation_scale: float = Field(default=1.5, ge=1.0, le=10.0)
     take_profit_pct: float = Field(default=1.0, gt=0, le=100)
-    take_profit_basis: Literal['average_entry'] = 'average_entry'
+    take_profit_basis: Literal['average_entry', 'base_order'] = 'average_entry'
+    dca_mode: Literal['position_averaging', 'order_averaging'] = 'position_averaging'
+    averaging_method: Literal['fixed_order_value', 'fixed_coin_amount'] = 'fixed_order_value'
+    safety_order_base_quantity: float = Field(default=0.001, gt=0, le=1_000_000)
+    stop_loss_basis: Literal['average_entry', 'base_order'] = 'base_order'
+    move_stop_to_breakeven_enabled: bool = False
+    breakeven_activation_pct: float = Field(default=1.0, gt=0, le=100)
+    breakeven_offset_pct: float = Field(default=0.0, ge=-10, le=10)
+    reinvest_profit: bool = False
+    max_deal_duration_hours: int = Field(default=0, ge=0, le=8760)
+    start_condition: Literal['manual', 'immediately', 'ema_trend', 'rsi_oversold', 'ema_rsi', 'webhook'] = 'manual'
     trailing_take_profit_enabled: bool = False
     trailing_activation_pct: float = Field(default=1.0, ge=0, le=100)
     trailing_callback_pct: float = Field(default=0.3, gt=0, le=50)
