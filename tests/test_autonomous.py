@@ -73,7 +73,7 @@ def test_autonomous_engine_reduces_safety_orders_to_respect_capital_limit():
 def test_autonomous_engine_rejects_invalid_close_prices():
     candles = candles_from_closes([100 + i for i in range(100)])
     candles[-1][4] = float("nan")
-    with pytest.raises(ValueError, match="invalid close"):
+    with pytest.raises(ValueError, match="non-finite OHLCV"):
         calculate_indicators(candles, config())
 
 
