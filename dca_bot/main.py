@@ -21,6 +21,7 @@ from .models import AuditEvent, PaperDealRecord, StrategyRecord
 from .strategy import StrategyConfig
 from .dca_math import build_dca_summary
 from .market_data import BinanceSpotMarketData
+from .autonomous import analyze_market
 from decimal import Decimal as D
 from .worker import run_paper_worker, tick_active_paper_deals
 from .paper_engine import (
@@ -141,6 +142,42 @@ def market_ticker(request: Request, symbol: str = "BTC/USDT"):
         "timestamp_ms": ticker.timestamp_ms,
         "market": "spot",
     }
+
+
+@app.get("/api/strategy/analyze")
+def strategy_analyze(
+    request: Request,
+    symbol: str = "BTC/USDT",
+    timeframe: str = "1h",
+    strategy_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Analyze public Spot candles and suggest adaptive DCA parameters; never places orders."""
+    ensure_authenticated(request)
+    try:
+        normalized = BinanceSpotMarketData.normalize_symbol(symbol)
+        if strategy_id is not None:
+            record = db.get(StrategyRecord, strategy_id)
+            if record is None:
+                raise HTTPException(status_code=404, detail="Strategy not found")
+            config = StrategyConfig.model_validate_json(record.config_json)
+            if normalized not in config.symbols:
+                raise HTTPException(status_code=422, detail="Pair is not included in this strategy")
+        else:
+            config = StrategyConfig.model_validate({"symbols": [normalized], "timeframe": timeframe})
+        if timeframe not in {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"}:
+            raise ValueError("Unsupported Binance Spot candle timeframe")
+        config = config.model_copy(update={"timeframe": timeframe})
+        limit = min(1000, max(config.ema_slow + 50, config.atr_period * 3 + 10, 300))
+        candles = BinanceSpotMarketData().candles(normalized, timeframe, limit=limit)
+        decision = analyze_market(normalized, timeframe, candles, config)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Binance Spot candle data is temporarily unavailable") from exc
+    return decision.to_dict()
 
 
 @app.get("/api/dca/preview")
