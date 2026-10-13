@@ -117,9 +117,23 @@ def calculate_indicators(
     minimum = max(config.ema_slow + 1, config.rsi_period + 1, config.atr_period * 2 + 1)
     if len(candles) < minimum:
         raise ValueError(f"At least {minimum} OHLCV candles are required")
-    closes = [float(candle[4]) for candle in candles]
-    if any(not isfinite(value) or value <= 0 for value in closes):
-        raise ValueError("Candles contain invalid close prices")
+    validated: list[tuple[float, float, float, float, float, float]] = []
+    for candle in candles:
+        if len(candle) < 6:
+            raise ValueError("Candles must contain OHLCV fields")
+        try:
+            timestamp, open_price, high, low, close_price, volume = (float(value) for value in candle[:6])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Candles contain non-numeric OHLCV values") from exc
+        values = (timestamp, open_price, high, low, close_price, volume)
+        if any(not isfinite(value) for value in values):
+            raise ValueError("Candles contain non-finite OHLCV values")
+        if min(open_price, high, low, close_price) <= 0 or volume < 0:
+            raise ValueError("Candles contain invalid OHLCV values")
+        if high < max(open_price, low, close_price) or low > min(open_price, high, close_price):
+            raise ValueError("Candles contain inconsistent high/low prices")
+        validated.append(values)
+    closes = [candle[4] for candle in validated]
     close = closes[-1]
     ema_fast = _ema(closes, config.ema_fast)
     ema_slow = _ema(closes, config.ema_slow)
