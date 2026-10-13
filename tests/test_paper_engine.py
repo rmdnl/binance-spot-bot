@@ -3,7 +3,7 @@ from decimal import Decimal as D
 import pytest
 
 from dca_bot.paper_engine import (
-    deserialize_paper_deal, serialize_paper_deal, start_paper_deal, update_paper_deal,
+    deserialize_paper_deal, estimate_unrealized_pnl_quote, serialize_paper_deal, start_paper_deal, update_paper_deal,
 )
 from dca_bot.strategy import StrategyConfig
 
@@ -81,6 +81,16 @@ def test_paper_deal_closes_at_take_profit_and_accounts_for_fees():
     assert deal.close_reason == "take_profit"
     assert deal.realized_pnl_quote > 0
     assert deal.realized_pnl_quote < D("0.2")
+
+
+def test_unrealized_pnl_uses_same_fee_and_slippage_model_as_realized_pnl():
+    deal = start_paper_deal(
+        config(max_safety_orders=0, slippage_pct_per_side=0.1), "BTC/USDT", D("100")
+    )
+    mark = D("102")
+    estimate = estimate_unrealized_pnl_quote(deal, mark)
+    update_paper_deal(deal, mark)
+    assert deal.realized_pnl_quote == estimate
 
 
 def test_paper_pnl_deducts_estimated_slippage_on_both_sides():
