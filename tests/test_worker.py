@@ -674,3 +674,50 @@ def test_worker_and_capital_guards_fail_closed_on_persisted_deal_id_mismatch(mon
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_autonomous_history_restores_quiet_pairs_beyond_previous_global_limit():
+    engine, session = _session()
+    try:
+        # This pair's checkpoint is older than 1,000 unrelated events. It must
+        # still be restored so a restart cannot forget the candle/cooldown guard.
+        session.add_all([
+            models.AuditEvent(
+                event_type="autonomous_decision",
+                detail='{"strategy_id": 1, "symbol": "BTC/USDT", "candle_timestamp_ms": 123}',
+            ),
+            models.AuditEvent(
+                event_type="autonomous_entry_started",
+                detail='{"strategy_id": 1, "symbol": "BTC/USDT", "started_at_epoch": 456.0}',
+            ),
+        ])
+        for index in range(1005):
+            session.add_all([
+                models.AuditEvent(
+                    event_type="autonomous_decision",
+                    detail=(
+                        '{"strategy_id": %d, "symbol": "ALT%d/USDT", '
+                        '"candle_timestamp_ms": %d}'
+                    ) % (index + 2, index, index),
+                ),
+                models.AuditEvent(
+                    event_type="autonomous_entry_started",
+                    detail=(
+                        '{"strategy_id": %d, "symbol": "ALT%d/USDT", '
+                        '"started_at_epoch": %d.0}'
+                    ) % (index + 2, index, index),
+                ),
+            ])
+        session.commit()
+
+        decisions, entries = worker._load_autonomous_history(session)
+
+        key = (1, "BTC/USDT")
+        assert decisions[key]["candle_timestamp_ms"] == 123
+        assert entries[key] == 456.0
+        assert len(decisions) == 1006
+        assert len(entries) == 1006
+    finally:
+        session.close()
+        engine.dispose()
