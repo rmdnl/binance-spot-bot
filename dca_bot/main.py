@@ -24,6 +24,7 @@ from .market_data import BinanceSpotMarketData
 from .autonomous import analyze_market
 from decimal import Decimal as D
 from .worker import run_paper_worker, tick_active_paper_deals
+from .risk import reserved_capital_quote
 from .paper_engine import (
     deserialize_paper_deal,
     estimate_unrealized_pnl_quote,
@@ -274,18 +275,25 @@ def paper_deal_start(
         config = StrategyConfig.model_validate_json(record.config_json)
         normalized = BinanceSpotMarketData.normalize_symbol(symbol)
         active_rows = db.query(PaperDealRecord).filter_by(status="active").all()
-        strategy_active = 0
+        strategy_deals = []
         symbol_active = 0
         for active_row in active_rows:
             active_deal = deserialize_paper_deal(active_row.state_json)
             if active_row.strategy_id == strategy_id:
-                strategy_active += 1
+                strategy_deals.append(active_deal)
                 if active_deal.symbol == normalized:
                     symbol_active += 1
-        if strategy_active >= config.max_active_deals:
+        if len(strategy_deals) >= config.max_active_deals:
             raise ValueError("Maximum active deals for this strategy reached")
         if symbol_active >= config.max_active_deals_per_symbol:
             raise ValueError("Maximum active deals for this pair reached")
+        reserved = reserved_capital_quote(strategy_deals)
+        new_reservation = D(str(config.max_capital_per_deal))
+        total_cap = D(str(config.max_total_allocation))
+        if reserved + new_reservation > total_cap:
+            raise ValueError(
+                "Total allocation cap would be exceeded by active and new deal reservations"
+            )
         ticker = BinanceSpotMarketData().ticker(normalized)
         deal = start_paper_deal(config, normalized, ticker.last)
     except ValueError as exc:
