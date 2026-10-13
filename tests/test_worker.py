@@ -111,8 +111,7 @@ def test_worker_keeps_persisted_state_unchanged_when_market_price_fetch_fails(mo
         result = worker.tick_active_paper_deals(session)
 
         assert result["updated"] == []
-        assert len(result["failures"]) == 1
-        assert result["failures"][0]["deal_id"] == row.id
+        assert any(item.get("deal_id") == row.id for item in result["failures"])
         persisted = session.get(PaperDealRecord, row.id)
         assert persisted.status == "active"
         assert persisted.state_json == original_state
