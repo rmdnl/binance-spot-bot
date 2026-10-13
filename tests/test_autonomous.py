@@ -239,3 +239,41 @@ def test_configured_adx_minimum_blocks_weak_market():
     assert result.action == "wait"
     assert "ADX is below the configured minimum" in result.reason
     assert result.indicators.adx < cfg.adx_min
+
+
+
+def test_autonomous_engine_caps_configured_take_profit_at_realistic_hard_limit():
+    cfg = config(take_profit_pct=8.0, min_net_profit_pct=0.3)
+    closes = [200 - i * 0.7 for i in range(100)]
+    result = analyze_market("BTCUSDT", "15m", candles_from_closes(closes), cfg)
+    assert result.parameters["take_profit_pct"] <= 5.0
+    assert result.parameters["capital_safe"] is True
+
+
+def test_autonomous_engine_keeps_normal_adaptive_take_profit_at_or_below_three_percent():
+    cfg = config(take_profit_pct=1.0, min_net_profit_pct=0.3)
+    closes = [200 - i * 0.7 for i in range(100)]
+    result = analyze_market("BTCUSDT", "15m", candles_from_closes(closes), cfg)
+    assert result.action == "candidate"
+    assert 0.5 <= result.parameters["take_profit_pct"] <= 3.0
+
+
+def test_autonomous_engine_uses_hard_cap_only_when_net_floor_requires_it():
+    cfg = config(take_profit_pct=1.0, min_net_profit_pct=4.5)
+    closes = [200 - i * 0.7 for i in range(100)]
+    result = analyze_market("BTCUSDT", "15m", candles_from_closes(closes), cfg)
+    assert result.parameters["take_profit_pct"] <= 5.0
+    assert result.parameters["take_profit_pct"] >= (
+        cfg.min_net_profit_pct
+        + 2 * cfg.fee_rate_pct_per_side
+        + 2 * cfg.slippage_pct_per_side
+    )
+
+
+def test_autonomous_engine_blocks_when_net_floor_requires_tp_above_hard_cap():
+    cfg = config(take_profit_pct=1.0, min_net_profit_pct=6.0)
+    closes = [200 - i * 0.7 for i in range(100)]
+    result = analyze_market("BTCUSDT", "15m", candles_from_closes(closes), cfg)
+    assert result.action == "wait"
+    assert "5% take-profit hard cap" in result.reason
+    assert result.parameters["take_profit_pct"] == 5.0
