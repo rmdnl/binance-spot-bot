@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
+from .config import get_settings
 from .market_data import BinanceSpotMarketData
 from .autonomous import analyze_market
 from .models import AuditEvent, PaperDealRecord, StrategyRecord
@@ -337,7 +338,11 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                                 )
                                 new_reservation = D(str(config.max_capital_per_deal))
                                 total_cap = D(str(config.max_total_allocation))
-                                if used_capacity + new_reservation > total_cap:
+                                global_limit = D(str(get_settings().global_capital_limit_quote))
+                                global_reserved = reserved_capital_quote([deal for _, deal in active_deals])
+                                if global_reserved + new_reservation > global_limit:
+                                    action, reason = "wait", "Global capital limit would be exceeded by active and new deal reservations across all strategies"
+                                elif used_capacity + new_reservation > total_cap:
                                     action, reason = "wait", "Total allocation cap would be exceeded by active and new deal reservations"
                                 elif not params.get("capital_safe", False):
                                     action, reason = "wait", "Adaptive DCA ladder exceeds the capital cap"
