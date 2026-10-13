@@ -221,6 +221,66 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
+  const riskList = document.getElementById('risk-status-list');
+  const refreshRiskStatus = async () => {
+    if (!riskList) return;
+    riskList.textContent = 'Checking paper risk guards…';
+    try {
+      const response = await fetch('/api/risk/status', {headers: {'Accept': 'application/json'}});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Risk status unavailable');
+      riskList.replaceChildren();
+      if (!data.strategies.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.append(
+          paperCell('span', '◇'),
+          paperCell('b', 'No saved strategies'),
+          paperCell('p', 'Save a strategy to initialize its paper risk guards.')
+        );
+        riskList.append(empty);
+        return;
+      }
+      data.strategies.forEach(item => {
+        const card = document.createElement('article');
+        card.className = 'paper-deal-card';
+        const head = document.createElement('div');
+        head.className = 'paper-deal-head';
+        const stateLabel = item.status === 'clear' ? 'ENTRY GUARDS CLEAR' : item.status === 'blocked' ? 'ENTRIES BLOCKED' : 'RISK STATUS UNKNOWN';
+        head.append(
+          paperCell('b', item.name),
+          paperCell('span', stateLabel, `state-chip ${item.status === 'clear' ? 'paper-active' : ''}`)
+        );
+        card.append(head);
+        if (item.status !== 'error') {
+          const stats = document.createElement('div');
+          stats.className = 'paper-deal-stats';
+          [
+            ['Virtual equity', `${Number(item.equity_quote).toFixed(2)} USDT`],
+            ['Peak equity', `${Number(item.peak_equity_quote).toFixed(2)} USDT`],
+            ['Drawdown', `${Number(item.drawdown_pct).toFixed(3)}%`],
+            ['Daily realized PnL (UTC)', `${Number(item.daily_realized_pnl_quote).toFixed(4)} USDT`]
+          ].forEach(([label, value]) => {
+            const cell = document.createElement('div');
+            cell.append(paperCell('span', label), paperCell('b', value));
+            stats.append(cell);
+          });
+          card.append(stats);
+        }
+        if (item.reason) card.append(paperCell('p', item.reason, 'muted tiny'));
+        riskList.append(card);
+      });
+      if (!data.entries_enabled) {
+        riskList.prepend(paperCell('p', 'At least one strategy is blocked or its risk state could not be verified. Entry must remain blocked for that strategy.', 'validation error'));
+      }
+    } catch (error) {
+      riskList.replaceChildren(paperCell('p', error.message || 'Risk status unavailable. Treat new entries as blocked until risk checks recover.', 'validation error'));
+    }
+  };
+
+  document.getElementById('refresh-risk-status')?.addEventListener('click', refreshRiskStatus);
+  refreshRiskStatus();
+
   document.querySelectorAll('[data-start-paper]').forEach(button => button.addEventListener('click', async () => {
     button.disabled = true;
     const original = button.textContent;

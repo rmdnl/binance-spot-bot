@@ -141,6 +141,8 @@ def strategy_risk_status(session: Session, strategy_record, now: datetime | None
 
     daily_loss_tripped = realized_today <= -Decimal(str(config.daily_loss_limit_quote))
     reason = state.drawdown_trip_reason if state.drawdown_tripped else None
+    if state.drawdown_tripped and not reason:
+        reason = "Drawdown breaker is latched but its reason is missing; manual reconciliation required"
     if reason is None and daily_loss_tripped:
         reason = (
             f"Daily realized loss {realized_today:.8f} USDT reached limit "

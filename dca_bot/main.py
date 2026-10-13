@@ -335,6 +335,47 @@ def paper_deal_start(
     return {"deal": deal.snapshot(), "execution": "paper", "orders_sent_to_exchange": False}
 
 
+@app.get("/api/risk/status")
+def paper_risk_status(request: Request, db: Session = Depends(get_db)):
+    """Return paper-equity guard status for dashboard display; never touches exchange orders."""
+    ensure_authenticated(request)
+    result = []
+    records = db.query(StrategyRecord).order_by(StrategyRecord.id.asc()).all()
+    for record in records:
+        try:
+            status = strategy_risk_status(db, record)
+            result.append({
+                "strategy_id": record.id,
+                "name": record.name,
+                "status": "blocked" if status["blocked"] else "clear",
+                **status,
+            })
+        except Exception:
+            logging.exception("Risk status unavailable for strategy %s", record.id)
+            result.append({
+                "strategy_id": record.id,
+                "name": record.name,
+                "status": "error",
+                "blocked": True,
+                "reason": "Risk evaluation failed; new entries must remain blocked",
+                "drawdown_tripped": None,
+                "daily_loss_tripped": None,
+            })
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Risk status could not be persisted") from exc
+    return {
+        "risk_model": "virtual_paper_equity",
+        "mark_source": "last persisted paper-deal price",
+        "daily_loss_timezone": "UTC",
+        "entries_enabled": not any(item["blocked"] for item in result),
+        "strategies": result,
+        "execution": "paper",
+    }
+
+
 @app.post("/api/risk/reset-drawdown")
 def reset_drawdown_guard(
     request: Request,
