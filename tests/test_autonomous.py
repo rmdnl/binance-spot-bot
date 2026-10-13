@@ -106,6 +106,9 @@ def test_enabled_autonomous_profile_scans_closed_candle_without_real_orders(monk
         def candles(self, symbol, timeframe, limit=500):
             return candles[-limit:]
 
+        def validate_minimum_order_sizes(self, symbol, config, price):
+            return None
+
     monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
     first = worker.scan_autonomous_strategies(session)
     assert len(first["started"]) == 1
@@ -152,6 +155,9 @@ def test_autonomous_candidate_opens_only_a_simulated_paper_deal(monkeypatch):
     class FakeMarketData:
         def candles(self, symbol, timeframe, limit=500):
             return candles[-limit:]
+
+        def validate_minimum_order_sizes(self, symbol, config, price):
+            return None
 
     monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
     result = worker.scan_autonomous_strategies(session)
