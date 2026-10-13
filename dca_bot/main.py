@@ -131,6 +131,8 @@ def dca_preview(
     initial_deviation_pct: str = "1",
     deviation_scale: str = "1",
     safety_volume_scale: str = "1",
+    averaging_method: str = "fixed_order_value",
+    safety_order_base_quantity: str = "0.001",
 ):
     """Authenticated deterministic DCA ladder and capital preview; no orders are placed."""
     ensure_authenticated(request)
@@ -144,6 +146,8 @@ def dca_preview(
             initial_deviation_pct=Decimal(initial_deviation_pct),
             deviation_scale=Decimal(deviation_scale),
             safety_volume_scale=Decimal(safety_volume_scale),
+            averaging_method=averaging_method,
+            safety_order_base_quantity=Decimal(safety_order_base_quantity),
         )
     except (ValueError, InvalidOperation) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
