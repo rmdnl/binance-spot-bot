@@ -302,6 +302,34 @@ def paper_deals(request: Request, db: Session = Depends(get_db)):
     return {"deals": result, "execution": "paper"}
 
 
+def persist_paper_entry(db: Session, strategy_id: int, deal) -> None:
+    """Persist a paper deal and its audit event atomically or fail closed."""
+    try:
+        db.add(PaperDealRecord(
+            id=deal.id,
+            strategy_id=strategy_id,
+            symbol=deal.symbol,
+            status=deal.status,
+            state_json=serialize_paper_deal(deal),
+        ))
+        db.add(AuditEvent(
+            event_type="paper_deal_started",
+            detail=json.dumps({
+                "deal_id": deal.id,
+                "strategy_id": strategy_id,
+                "symbol": deal.symbol,
+                "base_price": str(deal.base_price),
+            }),
+        ))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Paper entry persistence could not be confirmed; inspect persisted deal state before retrying",
+        ) from exc
+
+
 @app.post("/api/paper/deals/start")
 @serialized_entry
 def paper_deal_start(
@@ -360,18 +388,7 @@ def paper_deal_start(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Risk state or Spot market data unavailable; entry blocked") from exc
-    db.add(PaperDealRecord(
-        id=deal.id,
-        strategy_id=strategy_id,
-        symbol=deal.symbol,
-        status=deal.status,
-        state_json=serialize_paper_deal(deal),
-    ))
-    db.add(AuditEvent(
-        event_type="paper_deal_started",
-        detail=json.dumps({"deal_id": deal.id, "strategy_id": strategy_id, "symbol": deal.symbol, "base_price": str(deal.base_price)}),
-    ))
-    db.commit()
+    persist_paper_entry(db, strategy_id, deal)
     return {"deal": deal.snapshot(), "execution": "paper", "orders_sent_to_exchange": False}
 
 
