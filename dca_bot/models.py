@@ -37,3 +37,15 @@ class PaperDealRecord(Base):
     state_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class StrategyRiskState(Base):
+    """Persistent paper-equity reference and latched drawdown circuit breaker."""
+    __tablename__ = "strategy_risk_states"
+    strategy_id: Mapped[int] = mapped_column(ForeignKey("strategies.id"), primary_key=True)
+    reference_equity_quote: Mapped[str] = mapped_column(String(64), nullable=False)
+    peak_equity_quote: Mapped[str] = mapped_column(String(64), nullable=False)
+    drawdown_tripped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    drawdown_trip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
