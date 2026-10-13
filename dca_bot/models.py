@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -49,3 +49,20 @@ class StrategyRiskState(Base):
     drawdown_trip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AutonomousScanCheckpoint(Base):
+    """Compact durable scanner state, one row per strategy and discovered pair."""
+    __tablename__ = "autonomous_scan_checkpoints"
+    strategy_id: Mapped[int] = mapped_column(ForeignKey("strategies.id"), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(30), primary_key=True)
+    last_decision_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_entry_epoch: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AutonomousHistoryState(Base):
+    """Singleton migration marker so legacy audit history is imported only once."""
+    __tablename__ = "autonomous_history_state"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    initialized: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
