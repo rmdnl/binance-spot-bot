@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from decimal import Decimal as D
 from typing import Any
@@ -216,13 +217,37 @@ def _load_autonomous_history(
         if checkpoint.last_decision_json:
             try:
                 detail = json.loads(checkpoint.last_decision_json)
-                if isinstance(detail, dict):
-                    last_decision[key] = detail
-            except (TypeError, json.JSONDecodeError):
-                # Invalid checkpoint data must not crash the whole scanner.
-                pass
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"Corrupt autonomous scanner decision checkpoint for {key[0]} / {key[1]}; "
+                    "entries blocked until checkpoint recovery"
+                ) from exc
+            if not isinstance(detail, dict):
+                raise ValueError(
+                    f"Corrupt autonomous scanner decision checkpoint for {key[0]} / {key[1]}; "
+                    "entries blocked until checkpoint recovery"
+                )
+            try:
+                detail_key = (int(detail["strategy_id"]), str(detail["symbol"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Corrupt autonomous scanner decision checkpoint for {key[0]} / {key[1]}; "
+                    "entries blocked until checkpoint recovery"
+                ) from exc
+            if detail_key != key:
+                raise ValueError(
+                    f"Autonomous scanner checkpoint identity mismatch for {key[0]} / {key[1]}; "
+                    "entries blocked until checkpoint recovery"
+                )
+            last_decision[key] = detail
         if checkpoint.last_entry_epoch is not None:
-            last_entry[key] = float(checkpoint.last_entry_epoch)
+            entry_epoch = float(checkpoint.last_entry_epoch)
+            if not math.isfinite(entry_epoch) or entry_epoch < 0:
+                raise ValueError(
+                    f"Corrupt autonomous scanner entry checkpoint for {key[0]} / {key[1]}; "
+                    "entries blocked until checkpoint recovery"
+                )
+            last_entry[key] = entry_epoch
     return last_decision, last_entry
 
 
