@@ -14,8 +14,9 @@ def config(**overrides):
         "max_safety_orders": 4,
         "base_order_quote": 10,
         "safety_order_quote": 10,
-        "max_capital_per_deal": 200,
-        "max_total_allocation": 600,
+        "max_capital_per_deal": 100,
+        "max_total_allocation": 120,
+        "max_active_deals": 1,
     }
     values.update(overrides)
     return StrategyConfig(**values)
