@@ -75,3 +75,47 @@ def test_autonomous_engine_rejects_invalid_close_prices():
     candles[-1][4] = float("nan")
     with pytest.raises(ValueError, match="invalid close"):
         calculate_indicators(candles, config())
+
+
+
+def test_enabled_autonomous_profile_scans_closed_candle_without_real_orders(monkeypatch):
+    import json
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from dca_bot.db import Base
+    from dca_bot.models import AuditEvent, PaperDealRecord, StrategyRecord
+    from dca_bot import worker
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    cfg = config(start_condition="autonomous", symbols=["BTC/USDT"])
+    record = StrategyRecord(name=cfg.name, config_json=cfg.model_dump_json(), enabled=True)
+    session.add(record)
+    session.commit()
+
+    closes = [200 - i * 0.2 for i in range(350)]
+    candles = candles_from_closes(closes)
+
+    class FakeMarketData:
+        def candles(self, symbol, timeframe, limit=500):
+            return candles[-limit:]
+
+    monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
+    first = worker.scan_autonomous_strategies(session)
+    assert first["started"] == []
+    assert first["failures"] == []
+    assert first["waited"][0]["reason"].startswith("Downtrend")
+    assert session.query(PaperDealRecord).count() == 0
+
+    # The same closed candle is not evaluated twice.
+    second = worker.scan_autonomous_strategies(session)
+    assert second == {"started": [], "waited": [], "failures": []}
+    events = session.query(AuditEvent).filter_by(event_type="autonomous_decision").all()
+    assert len(events) == 1
+    detail = json.loads(events[0].detail)
+    assert detail["action"] == "wait"
+    assert detail["candle_timestamp_ms"] == candles[-2][0]
+    session.close()
+    engine.dispose()
