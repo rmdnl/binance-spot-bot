@@ -13,7 +13,13 @@ from .db import SessionLocal
 from .config import get_settings
 from .market_data import BinanceSpotMarketData
 from .autonomous import analyze_market
-from .models import AuditEvent, PaperDealRecord, StrategyRecord
+from .models import (
+    AuditEvent,
+    AutonomousHistoryState,
+    AutonomousScanCheckpoint,
+    PaperDealRecord,
+    StrategyRecord,
+)
 from .strategy import StrategyConfig
 from .paper_engine import deserialize_paper_deal, serialize_paper_deal, start_paper_deal, update_paper_deal
 from .risk import global_capital_status, reserved_capital_quote, strategy_risk_status
@@ -156,15 +162,10 @@ def _fresh_closed_candles(exchange: BinanceSpotMarketData, symbol: str, config: 
     return closed_candles, candle_timestamp_ms
 
 
-def _load_autonomous_history(
+def _read_autonomous_history_from_audit(
     session: Session,
 ) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[tuple[int, str], float]]:
-    """Restore the latest decision and entry time for every strategy/pair.
-
-    Do not cap this history to the newest N global events: a busy scanner can
-    otherwise evict a quiet pair's checkpoint and permit a same-candle re-entry
-    or forget its cooldown after a process restart.
-    """
+    """One-time legacy bootstrap from append-only audit events."""
     events = (
         session.query(AuditEvent)
         .filter(AuditEvent.event_type.in_(
@@ -187,6 +188,52 @@ def _load_autonomous_history(
             continue
     return last_decision, last_entry
 
+
+def _load_autonomous_history(
+    session: Session,
+) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[tuple[int, str], float]]:
+    """Load compact checkpoints; import legacy audit history only on first startup."""
+    state = session.get(AutonomousHistoryState, 1)
+    if state is None:
+        last_decision, last_entry = _read_autonomous_history_from_audit(session)
+        for key in set(last_decision) | set(last_entry):
+            session.add(AutonomousScanCheckpoint(
+                strategy_id=key[0],
+                symbol=key[1],
+                last_decision_json=(
+                    json.dumps(last_decision[key]) if key in last_decision else None
+                ),
+                last_entry_epoch=last_entry.get(key),
+            ))
+        session.add(AutonomousHistoryState(id=1, initialized=True))
+        session.flush()
+        return last_decision, last_entry
+
+    last_decision: dict[tuple[int, str], dict[str, Any]] = {}
+    last_entry: dict[tuple[int, str], float] = {}
+    for checkpoint in session.query(AutonomousScanCheckpoint).all():
+        key = (checkpoint.strategy_id, checkpoint.symbol)
+        if checkpoint.last_decision_json:
+            try:
+                detail = json.loads(checkpoint.last_decision_json)
+                if isinstance(detail, dict):
+                    last_decision[key] = detail
+            except (TypeError, json.JSONDecodeError):
+                # Invalid checkpoint data must not crash the whole scanner.
+                pass
+        if checkpoint.last_entry_epoch is not None:
+            last_entry[key] = float(checkpoint.last_entry_epoch)
+    return last_decision, last_entry
+
+
+def _checkpoint_for_pair(
+    session: Session, key: tuple[int, str]
+) -> AutonomousScanCheckpoint:
+    checkpoint = session.get(AutonomousScanCheckpoint, key)
+    if checkpoint is None:
+        checkpoint = AutonomousScanCheckpoint(strategy_id=key[0], symbol=key[1])
+        session.add(checkpoint)
+    return checkpoint
 
 @serialized_entry
 def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
@@ -214,12 +261,13 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
         if not profiles:
             return result
 
-        last_decision, last_entry = _load_autonomous_history(session)
-
         # SQLite's legacy transaction mode may not begin a physical transaction for SELECTs.
-        # Keep per-symbol savepoints covered by the final transaction commit/rollback.
+        # Begin before the one-time checkpoint bootstrap so marker, checkpoints, deals,
+        # and audit events all share the final commit/rollback boundary.
         if session.get_bind().dialect.name == "sqlite":
             session.connection().exec_driver_sql("BEGIN")
+
+        last_decision, last_entry = _load_autonomous_history(session)
         exchange = BinanceSpotMarketData()
         now = time.time()
         for profile in profiles:
@@ -408,6 +456,8 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                                             "parameters": params,
                                         }),
                                     ))
+                                    checkpoint = _checkpoint_for_pair(session, key)
+                                    checkpoint.last_entry_epoch = started_at
                         detail = {
                             "strategy_id": profile.id,
                             "symbol": symbol,
@@ -431,6 +481,8 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
                             event_type="autonomous_decision",
                             detail=json.dumps(detail),
                         ))
+                        checkpoint = _checkpoint_for_pair(session, key)
+                        checkpoint.last_decision_json = json.dumps(detail)
                         last_decision[key] = detail
                         if action != "candidate":
                             result["waited"].append({
