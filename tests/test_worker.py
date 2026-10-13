@@ -503,3 +503,50 @@ def test_invalid_enabled_profile_does_not_abort_other_autonomous_profiles(monkey
     finally:
         session.close()
         engine.dispose()
+
+
+def test_global_capital_limit_blocks_autonomous_entry_across_strategy_profiles(monkeypatch):
+    engine, session = _session()
+    try:
+        # An existing deal from a different profile reserves its full deal cap.
+        _, active_row, _ = _persist_active_deal(session)
+        config = _config().model_copy(update={
+            "name": "second-profile",
+            "start_condition": "autonomous",
+            "entry_filter": "none",
+            "pair_selection_mode": "automatic_usdt",
+            "max_active_deals": 2,
+        })
+        strategy = StrategyRecord(name=config.name, config_json=config.model_dump_json(), enabled=True)
+        session.add(strategy)
+        session.commit()
+        monkeypatch.setattr(worker, "get_settings", lambda: SimpleNamespace(global_capital_limit_quote=150))
+
+        current_hour_ms = (int(time.time() * 1000) // 3_600_000) * 3_600_000
+        candles = [
+            [current_hour_ms - (300 - index) * 3_600_000, 100, 101, 99, 100, 1000]
+            for index in range(301)
+        ]
+        class FakeMarketData:
+            def discover_usdt_symbols(self, **kwargs):
+                return ["ETH/USDT"]
+            def candles(self, symbol, timeframe, limit):
+                return candles
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", FakeMarketData)
+        monkeypatch.setattr(worker, "analyze_market", lambda symbol, timeframe, rows, cfg: SimpleNamespace(
+            action="candidate", reason="test candidate", score=90,
+            indicators=SimpleNamespace(close=100, ema_fast=100, ema_slow=99, rsi=35, atr_pct=1.2, adx=25),
+            parameters={"estimated_deal_capital_quote": 50, "capital_safe": True,
+                "initial_deviation_pct": 1.0, "deviation_scale": 1.2, "take_profit_pct": 1.0,
+                "max_safety_orders": 2, "safety_order_volume_scale": 1.2},
+        ))
+
+        result = worker.scan_autonomous_strategies(session)
+        assert result["started"] == []
+        assert any("Global capital limit" in item.get("reason", "") for item in result["waited"])
+        assert session.query(PaperDealRecord).filter_by(status="active").count() == 1
+        assert session.get(PaperDealRecord, active_row.id) is not None
+    finally:
+        session.close()
+        engine.dispose()
