@@ -550,3 +550,21 @@ def test_global_capital_limit_blocks_autonomous_entry_across_strategy_profiles(m
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_global_capital_status_fails_closed_on_persisted_status_mismatch():
+    from dca_bot.risk import global_capital_status
+
+    engine, session = _session()
+    try:
+        _, row, deal = _persist_active_deal(session)
+        deal.status = "closed"
+        row.state_json = serialize_paper_deal(deal)
+        session.commit()
+
+        with pytest.raises(ValueError, match="Persisted active deal state is inconsistent"):
+            global_capital_status(session, D("120"))
+    finally:
+        session.close()
+        engine.dispose()
