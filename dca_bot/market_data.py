@@ -50,7 +50,7 @@ class BinanceSpotMarketData:
         market = markets.get(normalized)
         if not market:
             raise ValueError(f"Binance Spot market {normalized} was not found")
-        if market.get("spot") is not True or market.get("active") is False:
+        if market.get("spot") is not True or market.get("active") is not True:
             raise ValueError(f"{normalized} is not an active Binance Spot market")
         data = self.exchange.fetch_ticker(normalized)
         try:
@@ -101,7 +101,7 @@ class BinanceSpotMarketData:
         market = markets.get(normalized)
         if not market:
             raise ValueError(f"Binance Spot market {normalized} was not found")
-        if market.get("spot") is not True or market.get("active") is False:
+        if market.get("spot") is not True or market.get("active") is not True:
             raise ValueError(f"{normalized} is not an active Binance Spot market")
 
         price0 = Decimal(str(price))
@@ -290,7 +290,7 @@ class BinanceSpotMarketData:
         market = markets.get(normalized)
         if not market:
             raise ValueError(f"Binance Spot market {normalized} was not found")
-        if market.get("spot") is not True or market.get("active") is False:
+        if market.get("spot") is not True or market.get("active") is not True:
             raise ValueError(f"{normalized} is not an active Binance Spot market")
         rows = self.exchange.fetch_ohlcv(normalized, timeframe=timeframe, limit=limit)
         if not isinstance(rows, list):
