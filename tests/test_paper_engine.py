@@ -83,6 +83,25 @@ def test_paper_deal_closes_at_take_profit_and_accounts_for_fees():
     assert deal.realized_pnl_quote < D("0.2")
 
 
+def test_paper_pnl_deducts_estimated_slippage_on_both_sides():
+    no_slippage = start_paper_deal(
+        config(max_safety_orders=0, slippage_pct_per_side=0), "BTC/USDT", D("100")
+    )
+    with_slippage = start_paper_deal(
+        config(max_safety_orders=0, slippage_pct_per_side=0.1), "BTC/USDT", D("100")
+    )
+    update_paper_deal(no_slippage, D("102"))
+    update_paper_deal(with_slippage, D("102"))
+    assert with_slippage.realized_pnl_quote < no_slippage.realized_pnl_quote
+
+
+def test_paper_entry_rejects_tp_below_minimum_net_profit_after_costs():
+    unsafe = config(take_profit_pct=0.5, min_net_profit_pct=0.3,
+                   fee_rate_pct_per_side=0.1, slippage_pct_per_side=0.05)
+    with pytest.raises(ValueError, match="below min_net_profit_pct"):
+        start_paper_deal(unsafe, "BTC/USDT", D("100"))
+
+
 def test_paper_deal_stop_loss_closes_before_take_profit():
     deal = start_paper_deal(
         config(max_safety_orders=0, stop_loss_enabled=True, stop_loss_pct=5), "BTC/USDT", D("100")

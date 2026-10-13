@@ -93,6 +93,11 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
     if normalized not in config.symbols:
         raise ValueError(f"{normalized} is not included in this strategy")
     price0 = _positive_price(price)
+    if config.estimated_net_tp_pct() < config.min_net_profit_pct:
+        raise ValueError(
+            "Estimated net take-profit is below min_net_profit_pct after fees and slippage; "
+            "increase take_profit_pct or reduce estimated costs"
+        )
     if config.start_condition not in {"manual", "immediately"}:
         raise ValueError("This start condition is configured but not implemented in the paper engine yet")
     if config.entry_filter not in {"manual", "none"}:
@@ -155,7 +160,13 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
 def _close(deal: PaperDeal, price: Decimal, reason: str) -> PaperEvent:
     proceeds = deal.base_quantity * price
     exit_fee = proceeds * D(str(deal.config.fee_rate_pct_per_side)) / D("100")
-    deal.realized_pnl_quote = proceeds - deal.quote_spent - deal.entry_fees_quote - exit_fee
+    slippage_rate = D(str(deal.config.slippage_pct_per_side)) / D("100")
+    entry_slippage = deal.quote_spent * slippage_rate
+    exit_slippage = proceeds * slippage_rate
+    deal.realized_pnl_quote = (
+        proceeds - deal.quote_spent - deal.entry_fees_quote - exit_fee
+        - entry_slippage - exit_slippage
+    )
     deal.exit_price = price
     deal.close_reason = reason
     deal.status = "closed"
