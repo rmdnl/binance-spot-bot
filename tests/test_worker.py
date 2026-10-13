@@ -563,7 +563,7 @@ def test_global_capital_status_fails_closed_on_persisted_status_mismatch():
         row.state_json = serialize_paper_deal(deal)
         session.commit()
 
-        with pytest.raises(ValueError, match="Persisted active deal state is inconsistent"):
+        with pytest.raises(ValueError, match="Persisted paper deal status mismatch"):
             global_capital_status(session, D("120"))
     finally:
         session.close()
