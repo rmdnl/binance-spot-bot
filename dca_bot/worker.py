@@ -156,6 +156,38 @@ def _fresh_closed_candles(exchange: BinanceSpotMarketData, symbol: str, config: 
     return closed_candles, candle_timestamp_ms
 
 
+def _load_autonomous_history(
+    session: Session,
+) -> tuple[dict[tuple[int, str], dict[str, Any]], dict[tuple[int, str], float]]:
+    """Restore the latest decision and entry time for every strategy/pair.
+
+    Do not cap this history to the newest N global events: a busy scanner can
+    otherwise evict a quiet pair's checkpoint and permit a same-candle re-entry
+    or forget its cooldown after a process restart.
+    """
+    events = (
+        session.query(AuditEvent)
+        .filter(AuditEvent.event_type.in_(
+            ("autonomous_decision", "autonomous_entry_started")
+        ))
+        .order_by(AuditEvent.id.desc())
+        .all()
+    )
+    last_decision: dict[tuple[int, str], dict[str, Any]] = {}
+    last_entry: dict[tuple[int, str], float] = {}
+    for event in events:
+        try:
+            detail = json.loads(event.detail)
+            key = (int(detail["strategy_id"]), str(detail["symbol"]))
+            if event.event_type == "autonomous_decision":
+                last_decision.setdefault(key, detail)
+            elif event.event_type == "autonomous_entry_started":
+                last_entry.setdefault(key, float(detail["started_at_epoch"]))
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+    return last_decision, last_entry
+
+
 @serialized_entry
 def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
     """Evaluate enabled autonomous profiles and open paper deals only on a fresh closed candle."""
@@ -182,29 +214,7 @@ def scan_autonomous_strategies(db: Session | None = None) -> dict[str, Any]:
         if not profiles:
             return result
 
-        decision_events = session.query(AuditEvent).filter_by(
-            event_type="autonomous_decision"
-        ).order_by(AuditEvent.id.desc()).limit(1000).all()
-        last_decision: dict[tuple[int, str], dict[str, Any]] = {}
-        for event in decision_events:
-            try:
-                detail = json.loads(event.detail)
-                key = (int(detail["strategy_id"]), str(detail["symbol"]))
-                last_decision.setdefault(key, detail)
-            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-                continue
-
-        entry_events = session.query(AuditEvent).filter_by(
-            event_type="autonomous_entry_started"
-        ).order_by(AuditEvent.id.desc()).limit(1000).all()
-        last_entry: dict[tuple[int, str], float] = {}
-        for event in entry_events:
-            try:
-                detail = json.loads(event.detail)
-                key = (int(detail["strategy_id"]), str(detail["symbol"]))
-                last_entry.setdefault(key, float(detail["started_at_epoch"]))
-            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-                continue
+        last_decision, last_entry = _load_autonomous_history(session)
 
         # SQLite's legacy transaction mode may not begin a physical transaction for SELECTs.
         # Keep per-symbol savepoints covered by the final transaction commit/rollback.
