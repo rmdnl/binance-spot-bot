@@ -421,6 +421,7 @@ def test_automatic_scanner_starts_highest_scoring_signal_first(monkeypatch):
 
         class FakeMarketData:
             requested_symbols = []
+            validated_orders = []
 
             def discover_usdt_symbols(self, **kwargs):
                 # Deliberately return lower-scoring ETH first to prove ranking is signal-led.
@@ -429,6 +430,9 @@ def test_automatic_scanner_starts_highest_scoring_signal_first(monkeypatch):
             def candles(self, symbol, timeframe, limit):
                 self.requested_symbols.append(symbol)
                 return candles
+
+            def validate_minimum_order_sizes(self, symbol, config, price):
+                self.validated_orders.append((symbol, price))
 
         fake_market = FakeMarketData()
         monkeypatch.setattr(worker, "BinanceSpotMarketData", lambda: fake_market)
@@ -458,6 +462,7 @@ def test_automatic_scanner_starts_highest_scoring_signal_first(monkeypatch):
 
         assert [item["symbol"] for item in result["started"]] == ["BTC/USDT"]
         assert sorted(fake_market.requested_symbols) == ["BTC/USDT", "ETH/USDT"]
+        assert fake_market.validated_orders == [("BTC/USDT", 100.0)]
         assert session.query(PaperDealRecord).filter_by(status="active").count() == 1
     finally:
         session.close()
