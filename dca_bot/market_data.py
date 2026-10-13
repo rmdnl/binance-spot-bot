@@ -232,7 +232,28 @@ class BinanceSpotMarketData:
         tickers = self._discovery_ticker_snapshot
         now_ms = int(time.time() * 1000)
         ranked: list[tuple[float, str]] = []
-        leveraged_suffixes = ("UP", "DOWN", "BULL", "BEAR", "2L", "2S", "3L", "3S", "5L", "5S")
+        leveraged_suffixes = ("DOWN", "BULL", "BEAR", "UP", "2L", "2S", "3L", "3S", "5L", "5S")
+        # A suffix alone is not enough to identify a leveraged token: legitimate
+        # assets can end in UP (for example GROUP). Treat a symbol as a likely
+        # leveraged token only when removing its suffix matches another active
+        # Spot USDT base asset in the loaded market universe.
+        active_usdt_bases = {
+            str(market["base"]).upper()
+            for market in markets.values()
+            if market.get("spot") is True
+            and market.get("active") is True
+            and market.get("quote") == "USDT"
+            and market.get("base")
+            and str(market["base"]).upper() != "USDT"
+        }
+
+        def is_likely_leveraged_base(base: str) -> bool:
+            for suffix in leveraged_suffixes:
+                underlying = base[:-len(suffix)] if base.endswith(suffix) else ""
+                if underlying and underlying in active_usdt_bases:
+                    return True
+            return False
+
         for symbol, market in markets.items():
             if (
                 market.get("spot") is not True
@@ -243,7 +264,7 @@ class BinanceSpotMarketData:
             ):
                 continue
             base = str(market["base"]).upper()
-            if base.endswith(leveraged_suffixes):
+            if is_likely_leveraged_base(base):
                 continue
             ticker = tickers.get(symbol)
             if not isinstance(ticker, dict):
