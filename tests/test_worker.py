@@ -253,3 +253,71 @@ def test_worker_rolls_back_one_deal_when_audit_write_fails(monkeypatch):
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_autonomous_automatic_mode_scans_discovered_usdt_pairs_not_manual_symbols(monkeypatch):
+    engine, session = _session()
+    try:
+        config = _config().model_copy(update={
+            "start_condition": "autonomous",
+            "entry_filter": "none",
+            "pair_selection_mode": "automatic_usdt",
+            "discovery_min_quote_volume_24h": 5_000_000,
+            "discovery_max_spread_pct": 0.25,
+            "discovery_max_candidates": 10,
+        })
+        strategy = StrategyRecord(
+            name=config.name,
+            config_json=config.model_dump_json(),
+            enabled=True,
+        )
+        session.add(strategy)
+        session.commit()
+
+        current_hour_ms = (int(time.time() * 1000) // 3_600_000) * 3_600_000
+        candles = [
+            [current_hour_ms - (300 - index) * 3_600_000, 100, 101, 99, 100, 1000]
+            for index in range(301)
+        ]
+        class FakeMarketData:
+            discovered_args = None
+            requested_symbols = []
+
+            def discover_usdt_symbols(self, **kwargs):
+                self.discovered_args = kwargs
+                return ["ETH/USDT"]
+
+            def candles(self, symbol, timeframe, limit):
+                self.requested_symbols.append(symbol)
+                return candles
+
+        fake_market = FakeMarketData()
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", lambda: fake_market)
+        monkeypatch.setattr(worker, "analyze_market", lambda symbol, timeframe, rows, cfg: SimpleNamespace(
+            action="wait",
+            reason="test decision",
+            score=10,
+            indicators=SimpleNamespace(
+                close=100, ema_fast=100, ema_slow=101, rsi=45, atr_pct=1.2, adx=15
+            ),
+            parameters={},
+        ))
+
+        result = worker.scan_autonomous_strategies(session)
+
+        assert result["started"] == []
+        assert fake_market.discovered_args == {
+            "min_quote_volume_24h": 5_000_000,
+            "max_spread_pct": 0.25,
+            "limit": 10,
+        }
+        assert fake_market.requested_symbols == ["ETH/USDT"]
+        assert session.query(PaperDealRecord).count() == 0
+        decision = session.query(models.AuditEvent).filter_by(
+            event_type="autonomous_decision"
+        ).one()
+        assert '"symbol": "ETH/USDT"' in decision.detail
+    finally:
+        session.close()
+        engine.dispose()
