@@ -35,3 +35,11 @@ def test_serialized_entry_prevents_overlapping_entry_checks():
         ("second", "start"),
         ("second", "end"),
     ]
+
+
+
+def test_paper_worker_state_paths_use_shared_serialization_guard():
+    from dca_bot.worker import scan_autonomous_strategies, tick_active_paper_deals
+
+    assert getattr(scan_autonomous_strategies, "__wrapped__", None) is not None
+    assert getattr(tick_active_paper_deals, "__wrapped__", None) is not None
