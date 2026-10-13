@@ -630,3 +630,37 @@ def test_risk_and_global_capital_guards_fail_closed_on_persisted_symbol_mismatch
     finally:
         session.close()
         engine.dispose()
+
+
+def test_worker_and_capital_guards_fail_closed_on_persisted_deal_id_mismatch(monkeypatch):
+    from dca_bot.risk import global_capital_status, strategy_risk_status
+
+    engine, session = _session()
+    try:
+        strategy, row, deal = _persist_active_deal(session)
+        original_state = row.state_json
+        old_id = row.id
+        row.id = "persisted-row-id-mismatch"
+        session.commit()
+
+        class MarketDataMustNotBeCalled:
+            def ticker(self, symbol):
+                raise AssertionError("market data must not be fetched for inconsistent persisted identity")
+
+        monkeypatch.setattr(worker, "BinanceSpotMarketData", MarketDataMustNotBeCalled)
+        result = worker.tick_active_paper_deals(session)
+
+        assert result["updated"] == []
+        assert len(result["failures"]) == 1
+        assert result["failures"][0]["deal_id"] == row.id
+        persisted = session.get(PaperDealRecord, row.id)
+        assert persisted.state_json == original_state
+        assert deal.id == old_id
+
+        with pytest.raises(ValueError, match="ID mismatch"):
+            strategy_risk_status(session, strategy)
+        with pytest.raises(ValueError, match="ID mismatch"):
+            global_capital_status(session, D("120"))
+    finally:
+        session.close()
+        engine.dispose()
