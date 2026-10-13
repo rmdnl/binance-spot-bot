@@ -920,3 +920,22 @@ def test_autonomous_history_fails_closed_on_checkpoint_identity_mismatch():
     finally:
         session.close()
         engine.dispose()
+
+
+
+def test_autonomous_history_fails_closed_on_corrupt_legacy_audit_event():
+    engine, session = _session()
+    try:
+        session.add(models.AuditEvent(
+            event_type="autonomous_decision",
+            detail="{not-valid-json",
+        ))
+        session.commit()
+
+        with pytest.raises(ValueError, match="Corrupt legacy autonomous audit history"):
+            worker._load_autonomous_history(session)
+
+        assert session.get(models.AutonomousHistoryState, 1) is None
+    finally:
+        session.close()
+        engine.dispose()
