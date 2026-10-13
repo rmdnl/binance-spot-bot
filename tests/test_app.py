@@ -131,3 +131,50 @@ def test_automatic_fixed_quote_profile_can_use_adaptive_ladder_within_cap():
     # analyzer can reduce safety-order count per candidate before opening.
     assert required is None
     assert total_capacity == 600
+
+
+def test_paper_entry_persistence_failure_rolls_back_and_fails_closed():
+    from types import SimpleNamespace
+
+    class FailingSession:
+        def __init__(self):
+            self.added = []
+            self.rolled_back = False
+
+        def add(self, item):
+            self.added.append(item)
+
+        def commit(self):
+            raise RuntimeError("simulated database commit failure")
+
+        def rollback(self):
+            self.rolled_back = True
+
+    session = FailingSession()
+    deal = SimpleNamespace(
+        id="paper-deal-id",
+        symbol="BTC/USDT",
+        status="active",
+        base_price=100,
+        snapshot=lambda: {},
+    )
+    # The helper serializes a complete PaperDeal, so use a real paper-engine
+    # deal while keeping the database commit deliberately unavailable.
+    config = StrategyConfig(
+        symbols=["BTC/USDT"],
+        base_order_quote=10,
+        safety_order_quote=10,
+        max_safety_orders=0,
+        max_capital_per_deal=20,
+        max_total_allocation=20,
+    )
+    from dca_bot.paper_engine import start_paper_deal
+    real_deal = start_paper_deal(config, "BTC/USDT", 100)
+
+    with pytest.raises(main.HTTPException) as exc:
+        main.persist_paper_entry(session, 7, real_deal)
+
+    assert exc.value.status_code == 503
+    assert "inspect persisted deal state before retrying" in exc.value.detail
+    assert len(session.added) == 2
+    assert session.rolled_back is True
