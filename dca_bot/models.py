@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -27,7 +27,6 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
-
 class PaperDealRecord(Base):
     __tablename__ = "paper_deals"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -35,6 +34,30 @@ class PaperDealRecord(Base):
     symbol: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(16), index=True, nullable=False, default="active")
     state_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class ExchangeOrderRecord(Base):
+    """Durable idempotency/reconciliation record for exchange orders."""
+    __tablename__ = "exchange_orders"
+    __table_args__ = (
+        UniqueConstraint("client_order_id", name="uq_exchange_orders_client_order_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    strategy_id: Mapped[int] = mapped_column(ForeignKey("strategies.id"), index=True, nullable=False)
+    deal_id: Mapped[str | None] = mapped_column(ForeignKey("paper_deals.id"), index=True, nullable=True)
+    symbol: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    client_order_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange_order_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="intent")
+    amount: Mapped[str] = mapped_column(String(64), nullable=False)
+    price: Mapped[str] = mapped_column(String(64), nullable=False)
+    filled: Mapped[str] = mapped_column(String(64), nullable=False, default="0")
+    remaining: Mapped[str] = mapped_column(String(64), nullable=False, default="0")
+    average: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    raw_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
