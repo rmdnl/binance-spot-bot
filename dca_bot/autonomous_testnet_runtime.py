@@ -14,13 +14,13 @@ from .capital_allocator import CapitalAllocator
 from .candidate_risk import CandidateRiskConfig
 from .db import SessionLocal
 from .execution_factory import build_execution_adapter
+from .execution_service import ExecutionService
 from .market_data import BinanceSpotMarketData
 from .models import StrategyRecord, TestnetDealRecord
 from .pair_discovery import AutonomousPairDiscovery
 from .reconciliation import reconcile_orders
 from .strategy_runtime import StrategyRuntimeError, load_strategy_config
 from .testnet_cycle import AutonomousTestnetCycle
-from .testnet_orchestrator import TestnetExecutionGateway
 
 logger = logging.getLogger(__name__)
 D = Decimal
@@ -43,6 +43,7 @@ def run_testnet_cycle_once(settings: Any) -> dict[str, Any]:
     session = SessionLocal()
     try:
         adapter = build_execution_adapter(settings)
+        execution = ExecutionService(adapter, session)
         market_data = BinanceSpotMarketData()
         discovery = AutonomousPairDiscovery(market_data)
         strategies = session.query(StrategyRecord).filter_by(enabled=True).all()
@@ -65,13 +66,11 @@ def run_testnet_cycle_once(settings: Any) -> dict[str, Any]:
                 CandidateRiskConfig(
                     max_capital_quote=D(str(config.max_capital_per_deal)),
                     global_capital_limit_quote=D(str(config.max_total_allocation)),
-                    # StrategyConfig stores percentages (0.3 = 0.30%); risk gate uses fractions.
                     min_net_profit_pct=D(str(config.min_net_profit_pct)) / D("100"),
                     max_spread_pct=D(str(config.discovery_max_spread_pct)),
                     max_positions=config.max_active_deals,
                 ),
             )
-            gateway = TestnetExecutionGateway(adapter, session)
 
             def analyze(symbol: str, *, _config=config) -> AutonomousDecision:
                 candles = market_data.candles(
@@ -91,7 +90,7 @@ def run_testnet_cycle_once(settings: Any) -> dict[str, Any]:
                 strategy=strategy,
                 discovery=discovery,
                 allocation=allocation,
-                gateway=gateway,
+                execution=execution,
                 analyze=analyze,
                 reconcile=reconcile,
                 requested_quote=D(str(config.base_order_quote)),
