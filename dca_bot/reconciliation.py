@@ -7,24 +7,34 @@ from sqlalchemy.orm import Session
 
 from .execution import ExecutionAdapter, ExecutionError, OrderResult
 from .models import AuditEvent, ExchangeOrderRecord, TestnetDealRecord
+from .order_state import OrderSnapshot, apply_exchange_result
 from .testnet_position_service import sync_order_fill
 
+TERMINAL = {"filled", "canceled"}
 
-TERMINAL = {"closed", "canceled"}
+
+def _snapshot(row: ExchangeOrderRecord) -> OrderSnapshot:
+    return OrderSnapshot(
+        client_order_id=row.client_order_id,
+        symbol=row.symbol,
+        side=row.side,
+        requested_amount=row.amount,
+        requested_price=row.price,
+        exchange_order_id=row.exchange_order_id,
+        filled_amount=row.filled,
+        average_price=row.average,
+    )
 
 
-def _apply_result(row: ExchangeOrderRecord, result: OrderResult) -> None:
-    if result.client_order_id and result.client_order_id != row.client_order_id:
-        raise RuntimeError("exchange client order id does not match local order")
-    if result.symbol and result.symbol != row.symbol:
-        raise RuntimeError("exchange symbol does not match local order")
-    if result.side != row.side:
-        raise RuntimeError("exchange side does not match local order")
-    row.exchange_order_id = result.order_id or row.exchange_order_id
-    row.status = result.status
-    row.filled = str(result.filled)
-    row.remaining = str(result.remaining)
-    row.average = str(result.average) if result.average is not None else None
+def _apply_state_machine(row: ExchangeOrderRecord, result: OrderResult) -> None:
+    """Apply an exchange observation through the canonical order state machine."""
+    local = _snapshot(row)
+    updated = apply_exchange_result(local, result)
+    row.exchange_order_id = updated.exchange_order_id
+    row.status = updated.status.value
+    row.filled = str(updated.filled_amount)
+    row.remaining = str(max(row.amount - updated.filled_amount, 0))
+    row.average = str(updated.average_price) if updated.average_price is not None else None
     row.raw_json = json.dumps(result.raw, default=str)
 
 
@@ -34,14 +44,14 @@ def reconcile_orders(session: Session, adapter: ExecutionAdapter, *, strategy_id
         query = query.filter_by(strategy_id=strategy_id)
     if symbol is not None:
         query = query.filter_by(symbol=symbol)
-    rows = query.all()
+    rows = query.order_by(ExchangeOrderRecord.id.asc()).all()
     result: dict[str, Any] = {"checked": 0, "updated": 0, "fills_accounted": 0, "adopted_by_client_id": 0, "query_required": [], "halt": [], "errors": []}
 
     for row in rows:
         result["checked"] += 1
         try:
             if row.exchange_order_id:
-                matches = [adapter.fetch_order(row.symbol, row.exchange_order_id)]
+                remote = adapter.fetch_order(row.symbol, row.exchange_order_id)
             else:
                 matches = adapter.fetch_order_by_client_id(row.symbol, row.client_order_id)
                 if len(matches) > 1:
@@ -50,10 +60,11 @@ def reconcile_orders(session: Session, adapter: ExecutionAdapter, *, strategy_id
                 if not matches:
                     result["query_required"].append({"id": row.id, "client_order_id": row.client_order_id, "reason": "no exchange order found; do not auto-resubmit"})
                     continue
+                remote = matches[0]
                 result["adopted_by_client_id"] += 1
 
-            remote = matches[0]
-            _apply_result(row, remote)
+            previous_filled = row.filled
+            _apply_state_machine(row, remote)
             result["updated"] += 1
 
             if row.deal_id is not None:
@@ -65,9 +76,12 @@ def reconcile_orders(session: Session, adapter: ExecutionAdapter, *, strategy_id
                 delta = sync_order_fill(session, deal, row)
                 if delta:
                     result["fills_accounted"] += 1
+            else:
+                session.commit()
 
-            session.add(AuditEvent(event_type="exchange_order_reconciled", detail=json.dumps({"order_record_id": row.id, "client_order_id": row.client_order_id, "exchange_order_id": row.exchange_order_id, "status": row.status, "filled": row.filled})))
-            session.commit()
+            if previous_filled != row.filled:
+                session.add(AuditEvent(event_type="exchange_order_reconciled", detail=json.dumps({"order_record_id": row.id, "client_order_id": row.client_order_id, "exchange_order_id": row.exchange_order_id, "status": row.status, "filled": row.filled})))
+                session.commit()
         except (ExecutionError, RuntimeError, ValueError) as exc:
             session.rollback()
             result["errors"].append({"id": row.id, "client_order_id": row.client_order_id, "error": str(exc)})
