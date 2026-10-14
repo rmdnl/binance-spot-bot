@@ -31,7 +31,11 @@ def make_order(db_session):
 
 def test_reconcile_applies_fill(db_session):
     strategy, order = make_order(db_session)
-    result = SimpleNamespace(order_id="123", status="filled", filled=D("1"), remaining=D("0"), average=D("101"), raw={"status": "FILLED"}, client_order_id="reconcile-order")
+    result = SimpleNamespace(
+        order_id="123", client_order_id="reconcile-order", symbol="BTC/USDT", side="buy",
+        status="filled", amount=D("1"), price=D("100"), filled=D("1"), remaining=D("0"),
+        average=D("101"), raw={"status": "FILLED"},
+    )
     stats = reconcile_orders(db_session, FakeAdapter(result), strategy_id=strategy.id)
     db_session.refresh(order)
     assert stats["updated"] == 1
