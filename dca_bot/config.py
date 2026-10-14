@@ -23,12 +23,16 @@ class Settings(BaseSettings):
     paper_poll_interval_seconds: int = Field(default=10, ge=3, le=300)
 
     def assert_safe(self) -> None:
-        # Exchange execution is intentionally not implemented. Reject any setting
-        # that could imply a live-capable deployment, regardless of app environment.
-        if self.trading_mode.lower() != 'paper':
-            raise ValueError('Only TRADING_MODE=paper is supported; exchange execution is not implemented')
+        mode = self.trading_mode.lower().strip()
+        if mode not in {'paper', 'testnet'}:
+            raise ValueError('TRADING_MODE must be paper or testnet')
         if self.live_trading_enabled:
-            raise ValueError('LIVE_TRADING_ENABLED must remain false until live execution is separately implemented and reviewed')
+            raise ValueError('LIVE_TRADING_ENABLED must remain false; live execution is not implemented')
+        if mode == 'testnet':
+            if not self.binance_testnet:
+                raise ValueError('BINANCE_TESTNET must remain true for Testnet execution')
+            if not self.binance_api_key or not self.binance_api_secret:
+                raise ValueError('Binance Testnet API credentials are required in testnet mode')
 
         if self.app_env.lower() == 'production':
             if (
@@ -41,8 +45,6 @@ class Settings(BaseSettings):
                 raise ValueError('ADMIN_PASSWORD_HASH must be configured in production')
             if not self.session_cookie_secure:
                 raise ValueError('SESSION_COOKIE_SECURE must be true in production behind HTTPS')
-            if self.trading_mode == 'live' and not self.live_trading_enabled:
-                raise ValueError('Live mode requires LIVE_TRADING_ENABLED=true')
 
 
 @lru_cache
