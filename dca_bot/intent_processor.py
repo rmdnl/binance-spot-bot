@@ -4,9 +4,9 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from .execution_service import ExecutionService, SubmitOutcome
 from .intent_queue import pending_entry_intents
 from .models import StrategyRecord
-from .testnet_orchestrator import SubmitOutcome, TestnetExecutionGateway
 
 
 @dataclass(frozen=True)
@@ -20,17 +20,17 @@ class IntentProcessStats:
 class DurableIntentProcessor:
     """Process persisted intents without blind retries after ambiguous submission."""
 
-    def __init__(self, session: Session, strategy: StrategyRecord, gateway: TestnetExecutionGateway) -> None:
+    def __init__(self, session: Session, strategy: StrategyRecord, execution: ExecutionService) -> None:
         self.session = session
         self.strategy = strategy
-        self.gateway = gateway
+        self.execution = execution
 
     def process(self) -> IntentProcessStats:
         intents = pending_entry_intents(self.session, self.strategy.id)
         submitted = recovered = failed = 0
         for record in intents:
             try:
-                outcome: SubmitOutcome = self.gateway.submit_or_recover(record)
+                outcome: SubmitOutcome = self.execution.submit_or_recover(record)
             except Exception:
                 failed += 1
                 continue
