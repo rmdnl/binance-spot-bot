@@ -9,10 +9,10 @@ from sqlalchemy.orm import Session
 from .allocation_decision import AutonomousAllocationEngine
 from .autonomous import AutonomousDecision
 from .entry_intent import create_entry_intent
+from .execution_service import ExecutionService
 from .intent_processor import DurableIntentProcessor, IntentProcessStats
 from .models import StrategyRecord
 from .pair_discovery import AutonomousPairDiscovery
-from .testnet_orchestrator import TestnetExecutionGateway
 
 D = Decimal
 
@@ -32,14 +32,14 @@ class AutonomousTestnetCycle:
     """Run one durable autonomous Testnet cycle."""
 
     def __init__(self, session: Session, strategy: StrategyRecord, discovery: AutonomousPairDiscovery,
-                 allocation: AutonomousAllocationEngine, gateway: TestnetExecutionGateway,
+                 allocation: AutonomousAllocationEngine, execution: ExecutionService,
                  analyze: Callable[[str], AutonomousDecision], reconcile: Callable[[], object],
                  requested_quote: D, max_candidates: int = 10) -> None:
         self.session = session
         self.strategy = strategy
         self.discovery = discovery
         self.allocation = allocation
-        self.gateway = gateway
+        self.execution = execution
         self.analyze = analyze
         self.reconcile = reconcile
         self.requested_quote = requested_quote
@@ -61,7 +61,7 @@ class AutonomousTestnetCycle:
                 continue
             order = create_entry_intent(
                 self.session, self.strategy, decision, self.requested_quote,
-                self.allocation, open_positions, self.gateway.adapter,
+                self.allocation, open_positions, self.execution.adapter,
             )
             if order is None:
                 skipped += 1
@@ -69,7 +69,7 @@ class AutonomousTestnetCycle:
             intents += 1
 
         processed: IntentProcessStats = DurableIntentProcessor(
-            self.session, self.strategy, self.gateway
+            self.session, self.strategy, self.execution
         ).process()
         self.reconcile()
         return CycleStats(
