@@ -24,7 +24,8 @@ from .dca_math import build_dca_summary
 from .market_data import BinanceSpotMarketData
 from .autonomous import analyze_market
 from decimal import Decimal as D
-from .worker import run_paper_worker, tick_active_paper_deals
+from .worker import tick_active_paper_deals
+from .trading_worker import run_trading_worker
 from .entry_guard import serialized_entry
 from .risk import reserved_capital_quote, strategy_risk_status
 from .paper_engine import (
@@ -43,19 +44,18 @@ settings = get_settings()
 async def lifespan(_: FastAPI):
     settings.assert_safe()
     init_db()
+
     stop_event = asyncio.Event()
-    worker_task = None
-    if settings.trading_mode.lower() == "paper":
-        worker_task = asyncio.create_task(
-            run_paper_worker(stop_event, settings.paper_poll_interval_seconds),
-            name="dca-paper-worker",
-        )
+    worker_task = asyncio.create_task(
+        run_trading_worker(stop_event, settings),
+        name=f"dca-{settings.trading_mode.lower()}-worker",
+    )
+
     try:
         yield
     finally:
-        if worker_task is not None:
-            stop_event.set()
-            await worker_task
+        stop_event.set()
+        await worker_task
 
 
 app = FastAPI(
