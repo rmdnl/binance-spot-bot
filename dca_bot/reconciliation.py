@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from .models import AuditEvent, ExchangeOrderRecord, TestnetDealRecord
 from .order_state import OrderSnapshot, apply_exchange_result
 from .testnet_position_service import sync_order_fill
 
+D = Decimal
 TERMINAL = {"filled", "canceled"}
 
 
@@ -18,22 +20,21 @@ def _snapshot(row: ExchangeOrderRecord) -> OrderSnapshot:
         client_order_id=row.client_order_id,
         symbol=row.symbol,
         side=row.side,
-        requested_amount=row.amount,
-        requested_price=row.price,
+        requested_amount=D(row.amount),
+        requested_price=D(row.price),
         exchange_order_id=row.exchange_order_id,
-        filled_amount=row.filled,
-        average_price=row.average,
+        filled_amount=D(row.filled),
+        average_price=D(row.average) if row.average else None,
     )
 
 
 def _apply_state_machine(row: ExchangeOrderRecord, result: OrderResult) -> None:
     """Apply an exchange observation through the canonical order state machine."""
-    local = _snapshot(row)
-    updated = apply_exchange_result(local, result)
+    updated = apply_exchange_result(_snapshot(row), result)
     row.exchange_order_id = updated.exchange_order_id
     row.status = updated.status.value
     row.filled = str(updated.filled_amount)
-    row.remaining = str(max(row.amount - updated.filled_amount, 0))
+    row.remaining = str(max(D(row.amount) - updated.filled_amount, D("0")))
     row.average = str(updated.average_price) if updated.average_price is not None else None
     row.raw_json = json.dumps(result.raw, default=str)
 
@@ -63,7 +64,7 @@ def reconcile_orders(session: Session, adapter: ExecutionAdapter, *, strategy_id
                 remote = matches[0]
                 result["adopted_by_client_id"] += 1
 
-            previous_filled = row.filled
+            previous_filled = D(row.filled)
             _apply_state_machine(row, remote)
             result["updated"] += 1
 
@@ -79,7 +80,7 @@ def reconcile_orders(session: Session, adapter: ExecutionAdapter, *, strategy_id
             else:
                 session.commit()
 
-            if previous_filled != row.filled:
+            if previous_filled != D(row.filled):
                 session.add(AuditEvent(event_type="exchange_order_reconciled", detail=json.dumps({"order_record_id": row.id, "client_order_id": row.client_order_id, "exchange_order_id": row.exchange_order_id, "status": row.status, "filled": row.filled})))
                 session.commit()
         except (ExecutionError, RuntimeError, ValueError) as exc:
