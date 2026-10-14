@@ -18,13 +18,18 @@ def test_production_rejects_known_public_example_secret():
 
 
 @pytest.mark.parametrize(
-    ("trading_mode", "live_enabled"),
-    [("live", False), ("live", True), ("testnet", False), ("paper", True)],
+    ("trading_mode", "live_enabled", "pattern"),
+    [
+        ("live", False, "TRADING_MODE"),
+        ("live", True, "TRADING_MODE"),
+        ("testnet", False, "BINANCE_TESTNET"),
+        ("paper", True, "LIVE_TRADING_ENABLED"),
+    ],
 )
-def test_runtime_rejects_any_non_paper_or_live_enabled_configuration(trading_mode, live_enabled):
+def test_runtime_rejects_unsafe_configuration(trading_mode, live_enabled, pattern):
     settings = Settings(trading_mode=trading_mode, live_trading_enabled=live_enabled)
 
-    with pytest.raises(ValueError, match="TRADING_MODE=paper|LIVE_TRADING_ENABLED"):
+    with pytest.raises(ValueError, match=pattern):
         settings.assert_safe()
 
 
