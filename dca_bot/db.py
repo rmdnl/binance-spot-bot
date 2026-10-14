@@ -29,6 +29,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 def init_db() -> None:
     from . import models  # noqa: F401
+    from .migrations import ensure_schema
+    ensure_schema(engine)
     Base.metadata.create_all(bind=engine)
 
 
