@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from decimal import Decimal as D
 from typing import Any
 
@@ -8,6 +9,13 @@ from sqlalchemy.orm import Session
 
 from .execution import ExecutionAdapter, ExecutionError, OrderIntent, OrderResult
 from .models import AuditEvent, ExchangeOrderRecord
+
+
+@dataclass(frozen=True)
+class SubmitOutcome:
+    record: ExchangeOrderRecord
+    result: OrderResult | None
+    submitted: bool
 
 
 def _result_to_json(result: OrderResult) -> str:
@@ -34,12 +42,7 @@ def submit_idempotent(
     intent: OrderIntent,
     deal_id: str | None = None,
 ) -> tuple[ExchangeOrderRecord, OrderResult | None]:
-    """Persist an order intent before submission and never blindly retry it.
-
-    If a client order id already exists locally, its durable state is returned.
-    A missing exchange order id therefore remains a reconciliation problem rather
-    than becoming a second exchange submission.
-    """
+    """Persist an order intent before submission and never blindly retry it."""
     if not intent.client_order_id:
         raise ExecutionError("Idempotent submission requires client_order_id")
 
@@ -88,8 +91,6 @@ def submit_idempotent(
     try:
         result = adapter.place_limit(intent)
     except Exception as exc:
-        # The request may have reached the exchange before the connection failed.
-        # Mark the intent unknown and require reconciliation. Never auto-submit again.
         existing.status = "unknown"
         existing.raw_json = json.dumps({"submission_error": str(exc)})
         session.add(AuditEvent(
@@ -126,3 +127,52 @@ def submit_idempotent(
     ))
     session.commit()
     return existing, result
+
+
+class ExecutionService:
+    """Canonical durable submission/recovery service for Spot Testnet orders."""
+
+    def __init__(self, adapter: ExecutionAdapter, session: Session) -> None:
+        self.adapter = adapter
+        self.session = session
+
+    def submit_or_recover(self, record: ExchangeOrderRecord) -> SubmitOutcome:
+        if record.status in {"closed", "canceled"}:
+            return SubmitOutcome(record, None, False)
+
+        existing = self.adapter.fetch_order_by_client_id(record.symbol, record.client_order_id)
+        if existing:
+            result = existing[0]
+            self._persist_result(record, result)
+            return SubmitOutcome(record, result, False)
+
+        intent = OrderIntent(
+            symbol=record.symbol,
+            side=record.side,  # type: ignore[arg-type]
+            amount=D(record.amount),
+            price=D(record.price),
+            client_order_id=record.client_order_id,
+            post_only=True,
+        )
+        try:
+            result = self.adapter.place_limit(intent)
+        except Exception:
+            record.status = "intent"
+            self.session.add(AuditEvent(
+                event_type="exchange_order_submit_ambiguous",
+                detail=f"order={record.id} client_order_id={record.client_order_id}",
+            ))
+            self.session.commit()
+            raise
+
+        self._persist_result(record, result)
+        return SubmitOutcome(record, result, True)
+
+    def _persist_result(self, record: ExchangeOrderRecord, result: OrderResult) -> None:
+        record.exchange_order_id = result.order_id or record.exchange_order_id
+        record.status = result.status
+        record.filled = str(result.filled)
+        record.remaining = str(result.remaining)
+        record.average = str(result.average) if result.average is not None else None
+        record.raw_json = _result_to_json(result)
+        self.session.commit()
