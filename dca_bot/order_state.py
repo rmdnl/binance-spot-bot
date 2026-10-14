@@ -51,11 +51,12 @@ def apply_exchange_result(local: OrderSnapshot, result: OrderResult) -> OrderSna
     if result.filled < 0 or result.filled > local.requested_amount:
         raise ValueError("Exchange reported an invalid filled amount")
 
-    if result.status == "closed":
+    exchange_status = result.status.lower().strip()
+    if exchange_status in {"closed", "filled"}:
         status = LocalOrderStatus.FILLED
-    elif result.status == "canceled":
+    elif exchange_status in {"canceled", "cancelled"}:
         status = LocalOrderStatus.CANCELED
-    elif result.status == "open":
+    elif exchange_status == "open":
         status = (
             LocalOrderStatus.PARTIALLY_FILLED
             if result.filled > 0
