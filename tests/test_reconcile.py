@@ -2,7 +2,7 @@ from decimal import Decimal as D
 from types import SimpleNamespace
 
 from dca_bot.models import ExchangeOrderRecord, StrategyRecord, TestnetDealRecord
-from dca_bot.reconcile import reconcile_testnet_orders
+from dca_bot.reconciliation import reconcile_orders
 
 
 class FakeAdapter:
@@ -10,6 +10,9 @@ class FakeAdapter:
         self.result = result
 
     def fetch_order_by_client_id(self, symbol, client_order_id):
+        return [self.result]
+
+    def fetch_order(self, symbol, order_id):
         return self.result
 
 
@@ -28,10 +31,11 @@ def make_order(db_session):
 
 def test_reconcile_applies_fill(db_session):
     strategy, order = make_order(db_session)
-    result = SimpleNamespace(order_id="123", status="filled", filled=D("1"), remaining=D("0"), average=D("101"), raw={"status": "FILLED"})
-    stats = reconcile_testnet_orders(db_session, FakeAdapter([result]), strategy.id)
+    result = SimpleNamespace(order_id="123", status="filled", filled=D("1"), remaining=D("0"), average=D("101"), raw={"status": "FILLED"}, client_order_id="reconcile-order")
+    stats = reconcile_orders(db_session, FakeAdapter(result), strategy_id=strategy.id)
     db_session.refresh(order)
-    assert stats.updated == 1
+    assert stats["updated"] == 1
+    assert stats["fills_accounted"] == 1
     assert order.exchange_order_id == "123"
     assert order.status == "filled"
     assert D(order.filled) == D("1")
