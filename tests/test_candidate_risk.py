@@ -17,7 +17,8 @@ def test_accepts_candidate_inside_limits():
 
 
 def test_rejects_global_capital_limit():
-    assert gate().evaluate(candidate(), D("121"), 0).reason == "global_capital_limit"
+    g = CandidateRiskGate(CandidateRiskConfig(D("200"), D("120"), D("0.003")))
+    assert g.evaluate(candidate(), D("121"), 0).reason == "global_capital_limit"
 
 
 def test_rejects_max_positions():
