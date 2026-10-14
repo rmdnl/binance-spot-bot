@@ -2,8 +2,8 @@ from decimal import Decimal as D
 
 import pytest
 
+from dca_bot.execution_service import ExecutionService
 from dca_bot.models import ExchangeOrderRecord, StrategyRecord
-from dca_bot.testnet_orchestrator import TestnetExecutionGateway
 
 
 class FakeAdapter:
@@ -39,21 +39,21 @@ def make_record(db_session):
     return record
 
 
-def test_gateway_recovers_existing_order_without_resubmission(db_session):
+def test_execution_service_recovers_existing_order_without_resubmission(db_session):
     record = make_record(db_session)
     from dca_bot.execution import OrderResult
     result = OrderResult("42", "entry-1", "BTC/USDT", "buy", "open", D("1"), D("0"), D("1"), None, D("100"), {})
     adapter = FakeAdapter(existing=[result])
-    outcome = TestnetExecutionGateway(adapter, db_session).submit_or_recover(record)
+    outcome = ExecutionService(adapter, db_session).submit_or_recover(record)
     assert not outcome.submitted
     assert adapter.submissions == 0
     assert record.exchange_order_id == "42"
 
 
-def test_gateway_does_not_blindly_retry_ambiguous_submission(db_session):
+def test_execution_service_does_not_blindly_retry_ambiguous_submission(db_session):
     record = make_record(db_session)
     adapter = FakeAdapter(error=TimeoutError("network timeout"))
     with pytest.raises(TimeoutError):
-        TestnetExecutionGateway(adapter, db_session).submit_or_recover(record)
+        ExecutionService(adapter, db_session).submit_or_recover(record)
     assert adapter.submissions == 1
     assert record.status == "intent"
