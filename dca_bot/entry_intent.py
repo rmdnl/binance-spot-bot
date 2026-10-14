@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from decimal import Decimal
 
-from sqlalchemy import text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .allocation_decision import AutonomousAllocationEngine
@@ -21,12 +21,7 @@ def _client_order_id(strategy_id: int, symbol: str, price: D) -> str:
 
 
 def _begin_atomic_capital_transaction(session: Session) -> None:
-    """Start a write-serialized transaction before reading allocatable capital.
-
-    SQLite needs BEGIN IMMEDIATE because its default deferred transaction can allow
-    two workers to read the same available capital before either writes an intent.
-    Other databases use their normal transaction and row locking below.
-    """
+    """Start a write-serialized transaction before reading allocatable capital."""
     if session.in_transaction():
         session.rollback()
     bind = session.get_bind()
@@ -50,8 +45,8 @@ def create_entry_intent(
 
     The autonomous cycle passes the original discovery candidate so spread, bid, ask,
     liquidity and score are preserved through the risk gate. The capital decision is
-    deliberately recomputed after acquiring the database write lock, eliminating the
-    check-then-insert race between concurrent workers.
+    recomputed after acquiring the database write lock, eliminating the check-then-insert
+    race between concurrent workers.
     """
     if decision.action != "candidate":
         return None
@@ -61,7 +56,6 @@ def create_entry_intent(
         return None
 
     if candidate is None:
-        # Compatibility for direct callers that do not have discovery metadata.
         candidate = PairCandidate(
             decision.symbol, D("0"), D("0"), price, price, price, D(str(decision.score))
         )
@@ -70,6 +64,9 @@ def create_entry_intent(
 
     _begin_atomic_capital_transaction(session)
     try:
+        session.execute(
+            select(StrategyRecord).where(StrategyRecord.id == strategy.id).with_for_update()
+        )
         allocation = allocation_engine.decide(
             session, candidate, requested_quote, open_positions
         )
@@ -96,7 +93,6 @@ def create_entry_intent(
             session.rollback()
             return existing
 
-        # Re-check the final normalized notional against the same locked allocation.
         final_quote = amount * price
         if final_quote <= 0 or final_quote > allocation.allocation.allocated_quote:
             session.rollback()
