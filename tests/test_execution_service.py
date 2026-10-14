@@ -144,7 +144,7 @@ def test_submission_error_becomes_unknown_and_blocks_retry(tmp_path):
     assert record.status == "unknown"
 
     adapter.error = None
-    with pytest.raises(ExecutionError, match="reconcile"):
+    with pytest.raises(ExecutionError, match="reconciliation"):
         ExecutionService(adapter, session).submit_or_recover(record)
     assert adapter.place_calls == 1
 

@@ -56,4 +56,4 @@ def test_execution_service_does_not_blindly_retry_ambiguous_submission(db_sessio
     with pytest.raises(TimeoutError):
         ExecutionService(adapter, db_session).submit_or_recover(record)
     assert adapter.submissions == 1
-    assert record.status == "intent"
+    assert record.status == "unknown"
