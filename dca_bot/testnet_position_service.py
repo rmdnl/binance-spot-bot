@@ -22,9 +22,6 @@ def sync_order_fill(session: Session, deal: TestnetDealRecord, order: ExchangeOr
         return D("0")
 
     position = Position(deal.symbol, D(deal.base_qty), D(deal.quote_cost))
-    # For an incremental fill, use the exchange-reported average when present.
-    # This is safe for cumulative average fields because the delta quantity is
-    # applied at the latest reported average only when the order has progressed.
     price = D(order.average or order.price)
     realized = position.apply_order_delta(order.side, previous, current, price)
 
@@ -32,7 +29,10 @@ def sync_order_fill(session: Session, deal: TestnetDealRecord, order: ExchangeOr
     deal.quote_cost = str(position.quote_cost)
     deal.average_entry = str(position.average_entry) if position.average_entry is not None else None
     deal.realized_pnl = str(D(deal.realized_pnl) + realized)
-    if position.base_qty == 0 and order.side == "sell":
+
+    if order.side == "buy" and position.base_qty > 0 and deal.status == "pending":
+        deal.status = "active"
+    elif position.base_qty == 0 and order.side == "sell":
         deal.status = "closed"
 
     order.last_accounted_filled = str(current)
