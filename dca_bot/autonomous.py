@@ -110,9 +110,7 @@ def _atr_adx(candles: Sequence[Sequence[float]], period: int) -> tuple[float, fl
     return atr_values[-1], adx_series[-1] if adx_series else sum(dx_values[-period:]) / min(period, len(dx_values))
 
 
-def calculate_indicators(
-    candles: Sequence[Sequence[float]], config: StrategyConfig
-) -> MarketIndicators:
+def calculate_indicators(candles: Sequence[Sequence[float]], config: StrategyConfig) -> MarketIndicators:
     """Calculate deterministic indicators from CCXT OHLCV candles."""
     minimum = max(config.ema_slow + 1, config.rsi_period + 1, config.atr_period * 2 + 1)
     if len(candles) < minimum:
@@ -139,27 +137,14 @@ def calculate_indicators(
     ema_slow = _ema(closes, config.ema_slow)
     rsi = _rsi(closes, config.rsi_period)
     atr, adx = _atr_adx(candles, config.atr_period)
-    return MarketIndicators(
-        close=close,
-        ema_fast=ema_fast,
-        ema_slow=ema_slow,
-        rsi=rsi,
-        atr=atr,
-        atr_pct=(atr / close) * 100.0,
-        adx=adx,
-    )
+    return MarketIndicators(close=close, ema_fast=ema_fast, ema_slow=ema_slow, rsi=rsi, atr=atr, atr_pct=(atr / close) * 100.0, adx=adx)
 
 
 def _bounded(value: float, low: float, high: float) -> float:
     return round(max(low, min(high, value)), 4)
 
 
-def analyze_market(
-    symbol: str,
-    timeframe: str,
-    candles: Sequence[Sequence[float]],
-    config: StrategyConfig,
-) -> AutonomousDecision:
+def analyze_market(symbol: str, timeframe: str, candles: Sequence[Sequence[float]], config: StrategyConfig) -> AutonomousDecision:
     """Return a long-only Spot decision and risk-bounded adaptive DCA parameters.
 
     This function is advisory only: it never places or queues an exchange order.
@@ -172,10 +157,6 @@ def analyze_market(
     indicators = calculate_indicators(candles, config)
 
     trend_up = indicators.close > indicators.ema_slow and indicators.ema_fast > indicators.ema_slow
-    # DCA-first policy: indicators may delay an overheated/high-volatility entry,
-    # but a bearish trend alone must not disable averaging-down behavior.
-    # Once a deal starts, safety orders are controlled by the DCA price ladder,
-    # not by repeatedly re-running these entry indicators.
     pullback_ok = indicators.rsi <= config.rsi_max_entry
     trend_strength_ok = indicators.adx >= config.adx_min
     score = 0
@@ -196,35 +177,22 @@ def analyze_market(
     else:
         action, reason = "candidate", "DCA-first entry accepted; downside safety orders will average the position by price levels (paper only)"
 
-    # Volatility-aware spacing and TP, bounded to prevent unbounded parameter drift.
     initial_deviation = _bounded(indicators.atr_pct * 1.25, 0.5, 3.0)
     deviation_scale = _bounded(1.2 + indicators.atr_pct / 12.0, 1.2, 1.8)
-    minimum_net_target_pct = (
-        config.min_net_profit_pct
-        + 2 * config.fee_rate_pct_per_side
-        + 2 * config.slippage_pct_per_side
-    )
-    # Keep ordinary targets close enough to market to encourage completed cycles.
-    # The 5% hard ceiling is only available when the configured net-profit floor
-    # plus estimated round-trip costs genuinely requires a target above 3%.
-    adaptive_base_target = _bounded(
-        max(config.take_profit_pct, indicators.atr_pct * 0.8),
-        0.5,
-        3.0,
-    )
+    minimum_net_target_pct = config.min_net_profit_pct + 2 * config.fee_rate_pct_per_side + 2 * config.slippage_pct_per_side
+
+    # Adaptive TP must remain close enough to the market to fill regularly.
+    # Do not inherit an arbitrarily large manual TP into autonomous mode.
+    # Normal TP is capped at 3%; the hard 5% ceiling is reserved only for a
+    # configured net-profit floor whose round-trip cost model actually requires it.
+    adaptive_base_target = _bounded(indicators.atr_pct * 0.8, 0.5, 3.0)
     if minimum_net_target_pct > 5.0:
         action = "wait"
-        reason = (
-            "Minimum net-profit requirement plus estimated fees/slippage exceeds "
-            "the 5% take-profit hard cap"
-        )
+        reason = "Minimum net-profit requirement plus estimated fees/slippage exceeds the 5% take-profit hard cap"
         take_profit = 5.0
     else:
-        take_profit = _bounded(
-            max(adaptive_base_target, minimum_net_target_pct),
-            0.5,
-            5.0,
-        )
+        take_profit = _bounded(max(adaptive_base_target, minimum_net_target_pct), 0.5, 5.0)
+
     safe_count = min(config.max_safety_orders, 8)
     parameters: dict[str, object] = {
         "initial_deviation_pct": initial_deviation,
@@ -238,16 +206,8 @@ def analyze_market(
         "fee_rate_pct_per_side": config.fee_rate_pct_per_side,
         "slippage_pct_per_side": config.slippage_pct_per_side,
     }
-    # Reduce the ladder until the estimate fits the configured per-deal hard cap.
     while safe_count > 0:
-        candidate = config.model_copy(update={
-            "symbols": [normalized],
-            "initial_deviation_pct": initial_deviation,
-            "deviation_scale": deviation_scale,
-            "take_profit_pct": take_profit,
-            "max_safety_orders": safe_count,
-            "safety_order_volume_scale": float(parameters["safety_order_volume_scale"]),
-        })
+        candidate = config.model_copy(update={"symbols": [normalized], "initial_deviation_pct": initial_deviation, "deviation_scale": deviation_scale, "take_profit_pct": take_profit, "max_safety_orders": safe_count, "safety_order_volume_scale": float(parameters["safety_order_volume_scale"])})
         try:
             required = candidate.estimated_max_deal_capital(indicators.close)
         except ValueError:
@@ -255,14 +215,7 @@ def analyze_market(
         if required <= config.max_capital_per_deal and required <= config.max_total_allocation:
             break
         safe_count -= 1
-    candidate = config.model_copy(update={
-        "symbols": [normalized],
-        "initial_deviation_pct": initial_deviation,
-        "deviation_scale": deviation_scale,
-        "take_profit_pct": take_profit,
-        "max_safety_orders": safe_count,
-        "safety_order_volume_scale": float(parameters["safety_order_volume_scale"]),
-    })
+    candidate = config.model_copy(update={"symbols": [normalized], "initial_deviation_pct": initial_deviation, "deviation_scale": deviation_scale, "take_profit_pct": take_profit, "max_safety_orders": safe_count, "safety_order_volume_scale": float(parameters["safety_order_volume_scale"])})
     try:
         required = candidate.estimated_max_deal_capital(indicators.close)
     except ValueError:
@@ -273,12 +226,4 @@ def analyze_market(
     if not parameters["capital_safe"]:
         action, reason = "wait", "Base order or minimum ladder exceeds the configured capital cap"
     parameters["score"] = score
-    return AutonomousDecision(
-        symbol=normalized,
-        timeframe=timeframe,
-        action=action,
-        reason=reason,
-        score=score,
-        indicators=indicators,
-        parameters=parameters,
-    )
+    return AutonomousDecision(symbol=normalized, timeframe=timeframe, action=action, reason=reason, score=score, indicators=indicators, parameters=parameters)
