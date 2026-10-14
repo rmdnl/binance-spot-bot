@@ -1,6 +1,7 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
+from dca_bot.execution import ExecutionError
 from dca_bot.testnet_deal import TestnetDealIntent, TestnetDealService
 
 
@@ -55,12 +56,12 @@ def test_submit_entry_persists_exchange_order(db_session):
 
 
 def test_ambiguous_submission_becomes_unknown(db_session):
-    service = TestnetDealService(make_adapter(error=RuntimeError("timeout")))
+    service = TestnetDealService(make_adapter(error=ExecutionError("timeout")))
     intent = TestnetDealIntent(1, "BTC/USDT", "buy", Decimal("0.001"), Decimal("50000"), "cid-2")
     row = service.create_entry_intent(db_session, intent)
     try:
         service.submit_entry(db_session, row)
-    except RuntimeError:
+    except ExecutionError:
         pass
     assert row.status == "unknown"
 
