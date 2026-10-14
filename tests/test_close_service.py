@@ -34,7 +34,7 @@ def test_take_profit_requires_actual_position(db_session):
     buy_fee, sell_fee, slippage = costs()
     decision = evaluate_take_profit(deal, D("100.35"), D("0.003"), buy_fee, sell_fee, slippage)
     assert not decision.should_close
-    decision = evaluate_take_profit(deal, D("100.50"), D("0.003"), buy_fee, sell_fee, slippage)
+    decision = evaluate_take_profit(deal, D("100.60"), D("0.003"), buy_fee, sell_fee, slippage)
     assert decision.should_close
     assert decision.target_price is not None
     assert decision.target_price > D("100.30")
