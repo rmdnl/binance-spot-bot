@@ -18,16 +18,22 @@ def test_production_rejects_known_public_example_secret():
 
 
 @pytest.mark.parametrize(
-    ("trading_mode", "live_enabled", "pattern"),
+    ("trading_mode", "live_enabled", "pattern", "binance_testnet"),
     [
-        ("live", False, "TRADING_MODE"),
-        ("live", True, "TRADING_MODE"),
-        ("testnet", False, "BINANCE_TESTNET"),
-        ("paper", True, "LIVE_TRADING_ENABLED"),
+        ("live", False, "TRADING_MODE", True),
+        ("live", True, "TRADING_MODE", True),
+        ("testnet", False, "BINANCE_TESTNET", False),
+        ("paper", True, "LIVE_TRADING_ENABLED", True),
     ],
 )
-def test_runtime_rejects_unsafe_configuration(trading_mode, live_enabled, pattern):
-    settings = Settings(trading_mode=trading_mode, live_trading_enabled=live_enabled)
+def test_runtime_rejects_unsafe_configuration(trading_mode, live_enabled, pattern, binance_testnet):
+    settings = Settings(
+        trading_mode=trading_mode,
+        live_trading_enabled=live_enabled,
+        binance_testnet=binance_testnet,
+        binance_api_key="test-key",
+        binance_api_secret="test-secret",
+    )
 
     with pytest.raises(ValueError, match=pattern):
         settings.assert_safe()
