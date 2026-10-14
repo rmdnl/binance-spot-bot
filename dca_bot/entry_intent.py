@@ -41,10 +41,34 @@ def create_entry_intent(session: Session, strategy: StrategyRecord, decision: Au
     if existing:
         return existing
     deal_id = f"deal-{strategy.id}-{decision.symbol.replace('/', '')}-{client_id[-12:]}"
-    deal = TestnetDealRecord(strategy_id=strategy.id, client_deal_id=deal_id, symbol=decision.symbol, status="active", base_qty="0", quote_cost="0", average_entry=None, realized_pnl="0", dca_level=0, state_json="{}")
+    deal = TestnetDealRecord(
+        strategy_id=strategy.id,
+        client_deal_id=deal_id,
+        symbol=decision.symbol,
+        status="pending",
+        base_qty="0",
+        quote_cost="0",
+        average_entry=None,
+        realized_pnl="0",
+        dca_level=0,
+        state_json="{}",
+    )
     session.add(deal)
     session.flush()
-    order = ExchangeOrderRecord(strategy_id=strategy.id, deal_id=deal.id, symbol=decision.symbol, side="buy", client_order_id=client_id, status="intent", amount=str(amount), price=str(price), filled="0", last_accounted_filled="0", remaining=str(amount), raw_json="{}")
+    order = ExchangeOrderRecord(
+        strategy_id=strategy.id,
+        deal_id=deal.id,
+        symbol=decision.symbol,
+        side="buy",
+        client_order_id=client_id,
+        status="intent",
+        amount=str(amount),
+        price=str(price),
+        filled="0",
+        last_accounted_filled="0",
+        remaining=str(amount),
+        raw_json="{}",
+    )
     session.add(order)
     session.commit()
     return order
