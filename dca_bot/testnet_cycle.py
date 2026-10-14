@@ -60,8 +60,14 @@ class AutonomousTestnetCycle:
                 skipped += 1
                 continue
             order = create_entry_intent(
-                self.session, self.strategy, decision, self.requested_quote,
-                self.allocation, open_positions, self.execution.adapter,
+                self.session,
+                self.strategy,
+                decision,
+                self.requested_quote,
+                self.allocation,
+                open_positions,
+                self.execution.adapter,
+                candidate=candidate,
             )
             if order is None:
                 skipped += 1
