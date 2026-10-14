@@ -26,7 +26,7 @@ def test_dca_identity_collision_is_rejected(db_session):
     spec = DcaOrderSpec(11, 1, "BTC/USDT", "buy", D("0.001"), D("49000"), 1)
     get_or_create_dca_intent(db_session, spec)
     db_session.commit()
-    conflicting = DcaOrderSpec(12, 1, "BTC/USDT", "buy", D("0.001"), D("49000"), 1)
+    conflicting = DcaOrderSpec(11, 1, "ETH/USDT", "buy", D("0.001"), D("49000"), 1)
     try:
         get_or_create_dca_intent(db_session, conflicting)
     except RuntimeError:
