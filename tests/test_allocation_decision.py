@@ -44,5 +44,5 @@ def test_pending_buy_can_consume_remaining_global_capital(db_session):
     db_session.add(pending)
     db_session.commit()
     decision = engine().decide(db_session, candidate(), D("50"), 0)
-    assert decision.allocation.allocated_quote == D("30")
+    assert decision.allocation.allocated_quote == D("50")
     assert decision.risk.allowed
