@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from decimal import Decimal as D
-from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -34,101 +33,6 @@ def _result_to_json(result: OrderResult) -> str:
     }, default=str)
 
 
-def submit_idempotent(
-    session: Session,
-    adapter: ExecutionAdapter,
-    *,
-    strategy_id: int,
-    intent: OrderIntent,
-    deal_id: str | None = None,
-) -> tuple[ExchangeOrderRecord, OrderResult | None]:
-    """Persist an order intent before submission and never blindly retry it."""
-    if not intent.client_order_id:
-        raise ExecutionError("Idempotent submission requires client_order_id")
-
-    existing = session.query(ExchangeOrderRecord).filter_by(
-        client_order_id=intent.client_order_id
-    ).one_or_none()
-    if existing is not None:
-        if existing.strategy_id != strategy_id or existing.symbol != intent.symbol or existing.side != intent.side:
-            raise ExecutionError("Client order id is already bound to a different order intent")
-        if existing.status not in {"intent", "unknown"} and existing.exchange_order_id:
-            return existing, None
-        if existing.status == "unknown":
-            raise ExecutionError("Existing order is in unknown state; reconcile before retrying")
-        if existing.exchange_order_id:
-            return existing, None
-    else:
-        existing = ExchangeOrderRecord(
-            strategy_id=strategy_id,
-            deal_id=deal_id,
-            symbol=intent.symbol,
-            side=intent.side,
-            client_order_id=intent.client_order_id,
-            status="intent",
-            amount=str(intent.amount),
-            price=str(intent.price or D("0")),
-            filled="0",
-            remaining=str(intent.amount),
-            raw_json="{}",
-        )
-        session.add(existing)
-        session.flush()
-        session.add(AuditEvent(
-            event_type="exchange_order_intent_created",
-            detail=json.dumps({
-                "order_record_id": existing.id,
-                "strategy_id": strategy_id,
-                "symbol": intent.symbol,
-                "side": intent.side,
-                "client_order_id": intent.client_order_id,
-                "amount": str(intent.amount),
-                "price": str(intent.price),
-            }),
-        ))
-        session.commit()
-
-    try:
-        result = adapter.place_limit(intent)
-    except Exception as exc:
-        existing.status = "unknown"
-        existing.raw_json = json.dumps({"submission_error": str(exc)})
-        session.add(AuditEvent(
-            event_type="exchange_order_submission_unknown",
-            detail=json.dumps({
-                "order_record_id": existing.id,
-                "client_order_id": existing.client_order_id,
-                "reason": "submission failed or timed out; reconciliation required",
-            }),
-        ))
-        session.commit()
-        raise
-
-    if not result.order_id:
-        existing.status = "unknown"
-        existing.raw_json = _result_to_json(result)
-        session.commit()
-        raise ExecutionError("Exchange accepted a response without an order id; reconciliation required")
-
-    existing.exchange_order_id = result.order_id
-    existing.status = result.status
-    existing.filled = str(result.filled)
-    existing.remaining = str(result.remaining)
-    existing.average = str(result.average) if result.average is not None else None
-    existing.raw_json = _result_to_json(result)
-    session.add(AuditEvent(
-        event_type="exchange_order_submitted",
-        detail=json.dumps({
-            "order_record_id": existing.id,
-            "client_order_id": existing.client_order_id,
-            "exchange_order_id": result.order_id,
-            "status": result.status,
-        }),
-    ))
-    session.commit()
-    return existing, result
-
-
 class ExecutionService:
     """Canonical durable submission/recovery service for Spot Testnet orders."""
 
@@ -137,7 +41,16 @@ class ExecutionService:
         self.session = session
 
     def submit_or_recover(self, record: ExchangeOrderRecord) -> SubmitOutcome:
+        """Submit an intent once, or recover an already-submitted order by client id.
+
+        The caller owns creation of the ExchangeOrderRecord. This service owns the
+        durable exchange submission/recovery transition and never blindly retries
+        an ambiguous submission.
+        """
         if record.status in {"closed", "canceled"}:
+            return SubmitOutcome(record, None, False)
+
+        if record.exchange_order_id and record.status not in {"intent", "unknown"}:
             return SubmitOutcome(record, None, False)
 
         existing = self.adapter.fetch_order_by_client_id(record.symbol, record.client_order_id)
@@ -145,6 +58,9 @@ class ExecutionService:
             result = existing[0]
             self._persist_result(record, result)
             return SubmitOutcome(record, result, False)
+
+        if record.status == "unknown":
+            raise ExecutionError("Existing order is in unknown state; reconciliation required")
 
         intent = OrderIntent(
             symbol=record.symbol,
@@ -156,14 +72,33 @@ class ExecutionService:
         )
         try:
             result = self.adapter.place_limit(intent)
-        except Exception:
-            record.status = "intent"
+        except Exception as exc:
+            record.status = "unknown"
+            record.raw_json = json.dumps({"submission_error": str(exc)})
             self.session.add(AuditEvent(
                 event_type="exchange_order_submit_ambiguous",
-                detail=f"order={record.id} client_order_id={record.client_order_id}",
+                detail=json.dumps({
+                    "order_record_id": record.id,
+                    "client_order_id": record.client_order_id,
+                    "reason": "submission failed or timed out; reconciliation required",
+                }),
             ))
             self.session.commit()
             raise
+
+        if not result.order_id:
+            record.status = "unknown"
+            record.raw_json = _result_to_json(result)
+            self.session.add(AuditEvent(
+                event_type="exchange_order_submission_unknown",
+                detail=json.dumps({
+                    "order_record_id": record.id,
+                    "client_order_id": record.client_order_id,
+                    "reason": "exchange accepted a response without an order id; reconciliation required",
+                }),
+            ))
+            self.session.commit()
+            raise ExecutionError("Exchange accepted a response without an order id; reconciliation required")
 
         self._persist_result(record, result)
         return SubmitOutcome(record, result, True)
@@ -175,4 +110,13 @@ class ExecutionService:
         record.remaining = str(result.remaining)
         record.average = str(result.average) if result.average is not None else None
         record.raw_json = _result_to_json(result)
+        self.session.add(AuditEvent(
+            event_type="exchange_order_submitted",
+            detail=json.dumps({
+                "order_record_id": record.id,
+                "client_order_id": record.client_order_id,
+                "exchange_order_id": result.order_id,
+                "status": result.status,
+            }),
+        ))
         self.session.commit()
