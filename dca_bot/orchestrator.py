@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
+from .execution_service import ExecutionService, SubmitOutcome
 from .models import ExchangeOrderRecord
-from .testnet_orchestrator import SubmitOutcome, TestnetExecutionGateway
 
 
 class Reconciler(Protocol):
@@ -27,17 +27,16 @@ class TestnetCycleOrchestrator:
     def __init__(
         self,
         session: Session,
-        gateway: TestnetExecutionGateway,
+        execution: ExecutionService,
         reconcile: Callable[[], object],
         risk_gate: Callable[[ExchangeOrderRecord], bool],
     ) -> None:
         self.session = session
-        self.gateway = gateway
+        self.execution = execution
         self.reconcile = reconcile
         self.risk_gate = risk_gate
 
     def run_once(self, intents: list[ExchangeOrderRecord]) -> CycleResult:
-        # Never create new exchange exposure from stale local state.
         self.reconcile()
         submitted = 0
         skipped = 0
@@ -45,7 +44,7 @@ class TestnetCycleOrchestrator:
             if not self.risk_gate(record):
                 skipped += 1
                 continue
-            outcome: SubmitOutcome = self.gateway.submit_or_recover(record)
+            outcome: SubmitOutcome = self.execution.submit_or_recover(record)
             if outcome.submitted:
                 submitted += 1
             else:
