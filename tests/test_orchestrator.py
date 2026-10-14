@@ -1,6 +1,6 @@
+from dca_bot.execution_service import ExecutionService
 from dca_bot.models import ExchangeOrderRecord, StrategyRecord
 from dca_bot.orchestrator import TestnetCycleOrchestrator
-from dca_bot.testnet_orchestrator import TestnetExecutionGateway
 
 
 class Adapter:
@@ -32,7 +32,7 @@ def test_reconcile_happens_before_risk_and_submission(db_session):
     adapter = Adapter()
     orchestrator = TestnetCycleOrchestrator(
         db_session,
-        TestnetExecutionGateway(adapter, db_session),
+        ExecutionService(adapter, db_session),
         reconcile=lambda: events.append("reconcile"),
         risk_gate=lambda _: events.append("risk") or False,
     )
