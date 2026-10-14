@@ -30,8 +30,10 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 def init_db() -> None:
     from . import models  # noqa: F401
     from .migrations import ensure_schema
+    from .schema_upgrade import ensure_exchange_order_columns
     ensure_schema(engine)
     Base.metadata.create_all(bind=engine)
+    ensure_exchange_order_columns(engine)
 
 
 def get_db():
