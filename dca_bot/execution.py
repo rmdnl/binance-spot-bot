@@ -6,7 +6,6 @@ from typing import Any, Literal, Protocol
 
 import ccxt
 
-
 D = Decimal
 OrderSide = Literal["buy", "sell"]
 OrderStatus = Literal["open", "closed", "canceled", "unknown"]
@@ -59,6 +58,7 @@ class OrderResult:
 class ExecutionAdapter(Protocol):
     def place_limit(self, intent: OrderIntent) -> OrderResult: ...
     def fetch_order(self, symbol: str, order_id: str) -> OrderResult: ...
+    def fetch_order_by_client_id(self, symbol: str, client_order_id: str) -> list[OrderResult]: ...
     def fetch_open_orders(self, symbol: str | None = None) -> list[OrderResult]: ...
     def cancel_order(self, symbol: str, order_id: str) -> OrderResult: ...
 
@@ -86,12 +86,7 @@ def _status(value: Any) -> OrderStatus:
 
 
 class BinanceSpotTestnetAdapter:
-    """Conservative CCXT adapter for Binance Spot Testnet only.
-
-    This adapter deliberately refuses live Binance execution. It is an execution
-    primitive, not a strategy engine: callers must perform risk checks before
-    invoking place_limit().
-    """
+    """Conservative CCXT adapter for Binance Spot Testnet only."""
 
     def __init__(self, api_key: str, api_secret: str, *, testnet: bool = True) -> None:
         if not testnet:
@@ -110,25 +105,23 @@ class BinanceSpotTestnetAdapter:
     def _market(self, symbol: str) -> dict[str, Any]:
         try:
             return self.exchange.market(symbol)
-        except Exception as exc:  # pragma: no cover - CCXT-specific failure
+        except Exception as exc:  # pragma: no cover
             raise ExecutionError(f"Unable to load Binance market {symbol}: {exc}") from exc
 
     def symbol_rules(self, symbol: str) -> SymbolRules:
         market = self._market(symbol)
         precision = market.get("precision") or {}
         limits = market.get("limits") or {}
-        amount_step = _decimal(precision.get("amount"))
-        price_step = _decimal(precision.get("price"))
-
-        # CCXT may expose decimal precision as an integer number of places.
-        if amount_step >= 1 and isinstance(precision.get("amount"), int):
-            amount_step = D("1") / (D("10") ** int(precision["amount"]))
-        if price_step >= 1 and isinstance(precision.get("price"), int):
-            price_step = D("1") / (D("10") ** int(precision["price"]))
-
+        amount_raw = precision.get("amount")
+        price_raw = precision.get("price")
+        amount_step = _decimal(amount_raw)
+        price_step = _decimal(price_raw)
+        if isinstance(amount_raw, int):
+            amount_step = D("1") / (D("10") ** amount_raw)
+        if isinstance(price_raw, int):
+            price_step = D("1") / (D("10") ** price_raw)
         if amount_step <= 0 or price_step <= 0:
             raise ExecutionError(f"Incomplete Binance precision metadata for {symbol}")
-
         return SymbolRules(
             symbol=symbol,
             base=str(market["base"]),
@@ -146,7 +139,6 @@ class BinanceSpotTestnetAdapter:
             raise ValueError("Order amount must be positive")
         if intent.price is None or intent.price <= 0:
             raise ValueError("Limit order price must be positive")
-
         rules = self.symbol_rules(intent.symbol)
         amount = _floor_step(intent.amount, rules.amount_step)
         price = _floor_step(intent.price, rules.price_step)
@@ -154,15 +146,7 @@ class BinanceSpotTestnetAdapter:
             raise ExecutionSafetyError("Order amount is below Binance min amount")
         if amount * price < rules.min_cost:
             raise ExecutionSafetyError("Order notional is below Binance min cost")
-
-        return OrderIntent(
-            symbol=intent.symbol,
-            side=intent.side,
-            amount=amount,
-            price=price,
-            client_order_id=intent.client_order_id,
-            post_only=intent.post_only,
-        )
+        return OrderIntent(intent.symbol, intent.side, amount, price, intent.client_order_id, intent.post_only)
 
     @staticmethod
     def _result(raw: dict[str, Any]) -> OrderResult:
@@ -190,16 +174,8 @@ class BinanceSpotTestnetAdapter:
         if normalized.post_only:
             params["postOnly"] = True
             params["timeInForce"] = "GTX"
-
         try:
-            raw = self.exchange.create_order(
-                normalized.symbol,
-                "limit",
-                normalized.side,
-                float(normalized.amount),
-                float(normalized.price),
-                params,
-            )
+            raw = self.exchange.create_order(normalized.symbol, "limit", normalized.side, float(normalized.amount), float(normalized.price), params)
         except ccxt.BaseError as exc:
             raise ExecutionError(f"Binance order submission failed: {exc}") from exc
         return self._result(raw)
@@ -209,6 +185,27 @@ class BinanceSpotTestnetAdapter:
             return self._result(self.exchange.fetch_order(order_id, symbol))
         except ccxt.BaseError as exc:
             raise ExecutionError(f"Binance order lookup failed: {exc}") from exc
+
+    def fetch_order_by_client_id(self, symbol: str, client_order_id: str) -> list[OrderResult]:
+        """Find an existing Binance order after an ambiguous submission.
+
+        Binance exposes ``origClientOrderId`` on the order lookup endpoint.
+        CCXT does not provide one portable high-level method for this across
+        exchanges, so this adapter uses Binance's raw private endpoint while
+        keeping the operation isolated here.
+        """
+        try:
+            raw = self.exchange.private_get_order({
+                "symbol": self.exchange.market_id(symbol),
+                "origClientOrderId": client_order_id,
+            })
+        except ccxt.BaseError as exc:
+            # Binance -2013 means no matching order. That is a query result,
+            # not proof that it is safe to blindly resubmit from this method.
+            if getattr(exc, "code", None) == -2013 or "-2013" in str(exc):
+                return []
+            raise ExecutionError(f"Binance client-order lookup failed: {exc}") from exc
+        return [self._result(raw)] if raw else []
 
     def fetch_open_orders(self, symbol: str | None = None) -> list[OrderResult]:
         try:
