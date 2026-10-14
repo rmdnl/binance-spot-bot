@@ -5,7 +5,7 @@ from dataclasses import asdict
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .allocation_decision import AutonomousAllocationEngine
@@ -14,11 +14,10 @@ from .capital_allocator import CapitalAllocator
 from .candidate_risk import CandidateRiskConfig
 from .db import SessionLocal
 from .execution_factory import build_execution_adapter
-from .intent_processor import DurableIntentProcessor
 from .market_data import BinanceSpotMarketData
 from .models import StrategyRecord, TestnetDealRecord
-from .order_state import reconcile_orders
 from .pair_discovery import AutonomousPairDiscovery
+from .reconciliation import reconcile_orders
 from .strategy_runtime import StrategyRuntimeError, load_strategy_config
 from .testnet_cycle import AutonomousTestnetCycle
 from .testnet_orchestrator import TestnetExecutionGateway
@@ -28,15 +27,11 @@ D = Decimal
 
 
 def _open_positions(session: Session, strategy_id: int) -> int:
-    return int(
-        session.scalar(
-            func.count(TestnetDealRecord.id).where(
-                TestnetDealRecord.strategy_id == strategy_id,
-                TestnetDealRecord.status == "active",
-            )
-        )
-        or 0
+    statement = select(func.count(TestnetDealRecord.id)).where(
+        TestnetDealRecord.strategy_id == strategy_id,
+        TestnetDealRecord.status == "active",
     )
+    return int(session.scalar(statement) or 0)
 
 
 def run_testnet_cycle_once(settings: Any) -> dict[str, Any]:
@@ -46,7 +41,6 @@ def run_testnet_cycle_once(settings: Any) -> dict[str, Any]:
         raise RuntimeError("Autonomous Testnet runtime requires TRADING_MODE=testnet")
 
     session = SessionLocal()
-    adapter = None
     try:
         adapter = build_execution_adapter(settings)
         market_data = BinanceSpotMarketData()
@@ -80,13 +74,17 @@ def run_testnet_cycle_once(settings: Any) -> dict[str, Any]:
             gateway = TestnetExecutionGateway(adapter, session)
 
             def analyze(symbol: str, *, _config=config) -> AutonomousDecision:
-                candles = market_data.candles(symbol, _config.timeframe, limit=min(1000, max(_config.ema_slow + 50, 300)))
+                candles = market_data.candles(
+                    symbol,
+                    _config.timeframe,
+                    limit=min(1000, max(_config.ema_slow + 50, 300)),
+                )
                 if len(candles) < 2:
                     raise ValueError("not enough candles")
                 return analyze_market(symbol, _config.timeframe, candles[:-1], _config)
 
             def reconcile(*, _strategy_id=strategy.id) -> object:
-                return reconcile_orders(session, adapter, _strategy_id)
+                return reconcile_orders(session, adapter, strategy_id=_strategy_id)
 
             cycle = AutonomousTestnetCycle(
                 session=session,
