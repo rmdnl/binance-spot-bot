@@ -7,7 +7,7 @@ import time
 from typing import Literal
 from uuid import uuid4
 
-from .dca_math import DcaSummary, SafetyOrderLevel, build_dca_summary
+from .dca_math import SafetyOrderLevel, build_dca_summary
 from .strategy import StrategyConfig
 
 
@@ -44,6 +44,7 @@ class PaperDeal:
     exit_price: Decimal | None = None
     realized_pnl_quote: Decimal = D("0")
     close_reason: str | None = None
+    last_dca_at_epoch: float | None = None
     events: list[PaperEvent] = field(default_factory=list)
 
     @property
@@ -91,17 +92,15 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
     if "/" not in normalized and normalized.endswith("USDT"):
         normalized = f"{normalized[:-4]}/USDT"
     if normalized not in config.symbols:
-        raise ValueError(f"{normalized} is not included in this strategy")
+        raise ValueError(f"{normalized} is not included in the configured pair list")
     price0 = _positive_price(price)
+    if config.price_range_enabled and not (D(str(config.price_range_min)) <= price0 <= D(str(config.price_range_max))):
+        raise ValueError("Current market price is outside the configured Price Range")
     if config.estimated_net_tp_pct() < config.min_net_profit_pct:
         raise ValueError(
             "Estimated net take-profit is below min_net_profit_pct after fees and slippage; "
             "increase take_profit_pct or reduce estimated costs"
         )
-    if config.start_condition not in {"manual", "immediately"}:
-        raise ValueError("This start condition is configured but not implemented in the paper engine yet")
-    if config.entry_filter not in {"manual", "none"}:
-        raise ValueError("This entry filter is configured but not implemented in the paper engine yet")
     if config.averaging_method == "fixed_coin_amount":
         summary = build_dca_summary(
             base_price=price0,
@@ -132,6 +131,7 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
         raise ValueError("Estimated DCA capital exceeds total allocation cap")
     base_qty = D(str(config.base_order_quote)) / price0
     entry_fee = D(str(config.base_order_quote)) * D(str(config.fee_rate_pct_per_side)) / D("100")
+    now = time.time()
     deal = PaperDeal(
         id=str(uuid4()),
         strategy_name=config.name,
@@ -144,7 +144,7 @@ def start_paper_deal(config: StrategyConfig, symbol: str, price: Decimal | str |
         base_quantity=base_qty,
         entry_fees_quote=entry_fee,
         safety_levels=summary.safety_orders,
-        started_at_epoch=time.time(),
+        started_at_epoch=now,
         highest_price=price0,
     )
     deal.events.append(PaperEvent(
@@ -181,10 +181,7 @@ def estimate_unrealized_pnl_quote(deal: PaperDeal, price: Decimal | str | float 
     slippage_rate = D(str(deal.config.slippage_pct_per_side)) / D("100")
     entry_slippage = deal.quote_spent * slippage_rate
     exit_slippage = proceeds * slippage_rate
-    return (
-        proceeds - deal.quote_spent - deal.entry_fees_quote - exit_fee
-        - entry_slippage - exit_slippage
-    )
+    return proceeds - deal.quote_spent - deal.entry_fees_quote - exit_fee - entry_slippage - exit_slippage
 
 
 def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[PaperEvent]:
@@ -194,43 +191,56 @@ def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[Pap
         return []
     deal.last_price = current
     emitted: list[PaperEvent] = []
+
+    if deal.config.price_range_enabled and not (D(str(deal.config.price_range_min)) <= current <= D(str(deal.config.price_range_max))):
+        return emitted
+
     if deal.config.max_deal_duration_hours > 0:
         max_age = deal.config.max_deal_duration_hours * 3600
         if time.time() - deal.started_at_epoch >= max_age:
             return [_close(deal, current, "max_deal_duration")]
 
-    # Safety orders are limit buys; if price crosses several levels, process them in order.
-    while deal.safety_orders_filled < len(deal.safety_levels):
-        level = deal.safety_levels[deal.safety_orders_filled]
-        if current > level.price:
-            break
-        if deal.quote_spent + level.quote_amount > D(str(deal.config.max_capital_per_deal)):
+    # Safety orders are limit buys. Cooldown applies between filled DCA rounds.
+    cooldown = deal.config.cooldown_seconds
+    cooldown_ready = (
+        cooldown <= 0
+        or deal.last_dca_at_epoch is None
+        or time.time() - deal.last_dca_at_epoch >= cooldown
+    )
+    if cooldown_ready:
+        while deal.safety_orders_filled < len(deal.safety_levels):
+            level = deal.safety_levels[deal.safety_orders_filled]
+            if current > level.price:
+                break
+            if deal.quote_spent + level.quote_amount > D(str(deal.config.max_capital_per_deal)):
+                event = PaperEvent(
+                    event_type="safety_order_blocked",
+                    detail="Safety order skipped because it would exceed the deal capital cap",
+                    price=level.price,
+                    quote_amount=level.quote_amount,
+                    base_quantity=level.base_quantity,
+                )
+                deal.events.append(event)
+                emitted.append(event)
+                deal.safety_orders_filled += 1
+                continue
+            fee = level.quote_amount * D(str(deal.config.fee_rate_pct_per_side)) / D("100")
+            deal.quote_spent += level.quote_amount
+            deal.base_quantity += level.base_quantity
+            deal.entry_fees_quote += fee
+            deal.safety_orders_filled += 1
+            deal.last_dca_at_epoch = time.time()
             event = PaperEvent(
-                event_type="safety_order_blocked",
-                detail="Safety order skipped because it would exceed the deal capital cap",
+                event_type="safety_order_filled",
+                detail=f"Simulated safety order {level.index} filled at its limit price",
                 price=level.price,
                 quote_amount=level.quote_amount,
                 base_quantity=level.base_quantity,
             )
             deal.events.append(event)
             emitted.append(event)
-            # A blocked order is not retried on every price tick.
-            deal.safety_orders_filled += 1
-            continue
-        fee = level.quote_amount * D(str(deal.config.fee_rate_pct_per_side)) / D("100")
-        deal.quote_spent += level.quote_amount
-        deal.base_quantity += level.base_quantity
-        deal.entry_fees_quote += fee
-        deal.safety_orders_filled += 1
-        event = PaperEvent(
-            event_type="safety_order_filled",
-            detail=f"Simulated safety order {level.index} filled at its limit price",
-            price=level.price,
-            quote_amount=level.quote_amount,
-            base_quantity=level.base_quantity,
-        )
-        deal.events.append(event)
-        emitted.append(event)
+            if cooldown > 0:
+                break
 
     avg = deal.average_entry_price
     deal.highest_price = max(deal.highest_price, current)
@@ -254,17 +264,12 @@ def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[Pap
     tp_basis = deal.base_price if deal.config.take_profit_basis == "base_order" else avg
     tp_price = tp_basis * (D("1") + D(str(deal.config.take_profit_pct)) / D("100"))
     if deal.config.trailing_take_profit_enabled:
-        activation_pct = max(
-            D(str(deal.config.trailing_activation_pct)),
-            D(str(deal.config.take_profit_pct)),
-        )
+        activation_pct = max(D(str(deal.config.trailing_activation_pct)), D(str(deal.config.take_profit_pct)))
         activation_price = tp_basis * (D("1") + activation_pct / D("100"))
         if current >= activation_price:
             deal.trailing_active = True
         if deal.trailing_active:
-            trailing_stop = deal.highest_price * (
-                D("1") - D(str(deal.config.trailing_callback_pct)) / D("100")
-            )
+            trailing_stop = deal.highest_price * (D("1") - D(str(deal.config.trailing_callback_pct)) / D("100"))
             if current <= trailing_stop:
                 emitted.append(_close(deal, current, "trailing_take_profit"))
                 return emitted
@@ -273,7 +278,6 @@ def update_paper_deal(deal: PaperDeal, price: Decimal | str | float) -> list[Pap
         return emitted
 
     return emitted
-
 
 
 def serialize_paper_deal(deal: PaperDeal) -> str:
@@ -291,13 +295,7 @@ def serialize_paper_deal(deal: PaperDeal) -> str:
         "base_quantity": str(deal.base_quantity),
         "entry_fees_quote": str(deal.entry_fees_quote),
         "safety_levels": [
-            {
-                "index": level.index,
-                "deviation_pct": str(level.deviation_pct),
-                "price": str(level.price),
-                "quote_amount": str(level.quote_amount),
-                "base_quantity": str(level.base_quantity),
-            }
+            {"index": level.index, "deviation_pct": str(level.deviation_pct), "price": str(level.price), "quote_amount": str(level.quote_amount), "base_quantity": str(level.base_quantity)}
             for level in deal.safety_levels
         ],
         "safety_orders_filled": deal.safety_orders_filled,
@@ -307,14 +305,9 @@ def serialize_paper_deal(deal: PaperDeal) -> str:
         "exit_price": str(deal.exit_price) if deal.exit_price is not None else None,
         "realized_pnl_quote": str(deal.realized_pnl_quote),
         "close_reason": deal.close_reason,
+        "last_dca_at_epoch": deal.last_dca_at_epoch,
         "events": [
-            {
-                "event_type": event.event_type,
-                "detail": event.detail,
-                "price": str(event.price),
-                "quote_amount": str(event.quote_amount),
-                "base_quantity": str(event.base_quantity),
-            }
+            {"event_type": event.event_type, "detail": event.detail, "price": str(event.price), "quote_amount": str(event.quote_amount), "base_quantity": str(event.base_quantity)}
             for event in deal.events
         ],
     }
@@ -326,13 +319,7 @@ def deserialize_paper_deal(payload: str) -> PaperDeal:
     data = json.loads(payload)
     config = StrategyConfig.model_validate(data["config"])
     levels = tuple(
-        SafetyOrderLevel(
-            index=int(level["index"]),
-            deviation_pct=D(level["deviation_pct"]),
-            price=D(level["price"]),
-            quote_amount=D(level["quote_amount"]),
-            base_quantity=D(level["base_quantity"]),
-        )
+        SafetyOrderLevel(index=int(level["index"]), deviation_pct=D(level["deviation_pct"]), price=D(level["price"]), quote_amount=D(level["quote_amount"]), base_quantity=D(level["base_quantity"]))
         for level in data["safety_levels"]
     )
     deal = PaperDeal(
@@ -355,15 +342,10 @@ def deserialize_paper_deal(payload: str) -> PaperDeal:
         exit_price=D(data["exit_price"]) if data["exit_price"] is not None else None,
         realized_pnl_quote=D(data["realized_pnl_quote"]),
         close_reason=data["close_reason"],
+        last_dca_at_epoch=float(data["last_dca_at_epoch"]) if data.get("last_dca_at_epoch") is not None else None,
     )
     deal.events = [
-        PaperEvent(
-            event_type=event["event_type"],
-            detail=event["detail"],
-            price=D(event["price"]),
-            quote_amount=D(event["quote_amount"]),
-            base_quantity=D(event["base_quantity"]),
-        )
+        PaperEvent(event_type=event["event_type"], detail=event["detail"], price=D(event["price"]), quote_amount=D(event["quote_amount"]), base_quantity=D(event["base_quantity"]))
         for event in data["events"]
     ]
     return deal
