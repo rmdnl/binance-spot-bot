@@ -1,51 +1,97 @@
 # DCA Bot
 
-A self-hosted Binance **Spot-only** DCA trading dashboard inspired by the workflow of established DCA platforms. It is an independent implementation and is not affiliated with 3Commas.
+A self-hosted Binance **Spot-only** DCA trading dashboard. It is an independent implementation and is not affiliated with 3Commas.
 
-> **Safety status:** initial development foundation. Paper trading is the only intended default. Do not use with real funds until exchange execution, reconciliation, authentication, and risk controls have been implemented and independently tested.
+> **Safety status:** development foundation. Paper trading is the current execution engine. Do not use with real funds until exchange execution, reconciliation, authentication, and risk controls have been independently validated.
 
-## Current implementation status
+## Architecture
 
-The dashboard has authenticated read-only Binance Spot ticker and OHLCV analysis endpoints, plus a DCA ladder/capital preview. The autonomous engine uses EMA, RSI, ATR and ADX as entry context, but follows a **DCA-first** policy: a bearish trend by itself does not block a new deal. It avoids starting overheated or high-volatility setups, checks the full DCA ladder against capital caps, and then lets the paper DCA engine trigger safety orders strictly from the configured downside price levels. Indicators are not re-evaluated to veto each safety order after a deal starts. In paper mode, explicitly enabled profiles using `Autonomous paper mode` are scanned on closed candles and may open simulated deals. This is paper execution only: no exchange orders are submitted.
+DCA Bot is intentionally **manual and deterministic**. The operator selects the USDT pairs and configures the DCA parameters from the dashboard. The bot does not discover pairs, scan for opportunities, evaluate trading signals, or choose entries autonomously.
 
-See [FEATURE_PARITY.md](FEATURE_PARITY.md) for the target feature matrix and delivery gates, and [DEPLOYMENT.md](DEPLOYMENT.md) for the recommended Cloudflare Tunnel + Access setup.
+The lifecycle is:
 
-## Goals
+1. Configure pairs and DCA parameters in the dashboard.
+2. Select a configured pair manually and press **Start DCA**.
+3. The base order is created by the DCA engine.
+4. Safety/DCA orders are triggered only by the configured downside price ladder.
+5. Average entry, take profit, optional trailing take profit, breakeven, stop loss, cooldown, price range, and capital/risk limits are evaluated by the deterministic deal engine.
+6. The worker manages only already-started deals. It never creates a new deal by itself.
 
-- Responsive dark trading dashboard served on port **8082**.
-- Manually configurable trading pairs and per-strategy settings.
-- Basic, Advanced, and Risk & Execution configuration levels.
-- DCA deal lifecycle: base order, safety orders, average entry, take-profit, optional trailing take-profit, and configurable stop loss.
-- Persistent strategy/deal state and auditable configuration changes.
-- Binance Spot only: no futures, margin, leverage, or withdrawals.
-- Authentication and explicit live-trading safeguards.
-- Paper trading first, followed by Binance Spot Testnet integration and controlled live mode only after validations pass.
+## Dashboard parameters
 
-## Planned configurable strategy parameters
+### Basic
 
-Pairs; quote/base order sizing; fixed or balance-relative sizing; safety-order count; safety-order volume scale; initial price deviation; deviation scale; deal limits; cooldown; take profit basis and target; trailing activation/callback; stop loss; partial exits; break-even rules; order type and timeout; fee and slippage assumptions; per-pair and total allocation caps; reserve balance; daily-loss and equity-drawdown guards; market/indicator filters; timeframe; retry policy; reconciliation cadence; notification settings; and schedules.
+- Pair(s), USDT spot only
+- Base Order Size
+- DCA Order Size
+- Max DCA Orders
+- Price Drop Step
+- Price Deviation Multiplier
+- DCA Order Size Multiplier
+- Take Profit %
+- Take-profit basis
+- DCA sizing method
+- DCA accounting mode
 
-Not every setting should be exposed as active until its behaviour is implemented and tested. Unsupported settings must be labelled unavailable rather than pretending to work.
+### Advanced
+
+- Trigger Price
+- Cooldown Between Rounds
+- Price Range with minimum/maximum price
+- Stop Loss and Stop Loss basis
+- Stop Loss and End The Bot
+- Trailing Take Profit
+- Trailing activation and callback
+- Move Stop to Breakeven
+- Breakeven activation and offset
+- Reinvest Profit
+- Maximum deal duration
+
+### Risk & execution
+
+- Maximum capital per deal
+- Maximum total allocation
+- Reserve balance
+- Daily loss limit
+- Maximum equity drawdown
+- Minimum net profit
+- Fee assumption
+- Slippage assumption
+- Order timeout
+- Reconciliation cadence
+
+Unsupported controls must not be presented as working features. Configuration validation is fail-closed.
+
+## DCA math
+
+The DCA ladder is calculated from the configured base price, base order value, DCA order value, maximum DCA count, price-drop step, deviation multiplier, and order-size multiplier.
+
+With a deviation multiplier of `1`, DCA levels are evenly spaced. A multiplier above `1` widens each successive price-drop step. Order sizing can remain fixed or scale geometrically according to the configured DCA order-size multiplier.
+
+The engine calculates total planned quote capital and average entry before a deal is started. It rejects configurations whose planned ladder exceeds the configured capital limits or whose estimated take-profit does not meet the configured minimum net-profit threshold after fee and slippage assumptions.
 
 ## Safety rules
 
+- Binance Spot only. No futures, margin, leverage, or withdrawals.
+- Live trading remains disabled by default.
 - Never commit API keys, passwords, session secrets, environment files, account data, or database files.
-- Keep API credentials on the VPS, restrict permissions and IPs, and never request withdrawal permission.
-- Use least-privilege Spot API permissions. Keep live execution disabled by default.
-- Require validation and explicit re-authentication/confirmation for live trading and other sensitive actions.
-- Validate Binance symbol filters, minimum notional, step size, tick size, fees, and estimated capital before placing orders.
-- Make order submission idempotent where possible; reconcile remote orders and trades after timeouts and restarts.
-- A stop request must prevent new entries; cancellation and position liquidation are distinct operations and must not be conflated.
+- Keep credentials on the VPS, restrict permissions and API scopes, and never grant withdrawal permission.
+- Validate pair format, quote asset, order sizing, capital limits, fees, and slippage before starting a deal.
 - Persist deal state transactionally and keep an audit trail of configuration changes and operator actions.
-- Run behind HTTPS/reverse proxy for remote access; do not expose an unauthenticated dashboard to the public internet.
+- Protective exits are evaluated before DCA-entry guards such as price range and cooldown.
+- A stop-loss with **End The Bot** enabled latches the dashboard configuration off, preventing subsequent manual starts until the operator saves a configuration again.
+- Paper mode never submits exchange orders.
+- Remote dashboard access must be protected by authenticated HTTPS/reverse proxy; do not expose an unauthenticated dashboard to the public internet.
 
 ## Runtime
 
-Target dashboard address: `http://127.0.0.1:8082` when accessed locally. For remote use, put it behind authenticated HTTPS at a reverse proxy. Bind publicly only when the host firewall and TLS setup are configured.
+Target dashboard address: `http://127.0.0.1:8082` when accessed locally. For remote use, put it behind authenticated HTTPS at a reverse proxy.
 
 ## Development status
 
-The current scaffold includes a responsive dashboard, password login, editable strategy profiles, SQLite persistence, initial risk validation helpers, a password-hash setup utility, VPS deployment notes, and GitHub Actions CI. Automated checks have passed during development. The dashboard includes a deterministic paper deal engine with persisted state, public-price polling, safety-order fills, average-entry tracking, TP/trailing/SL/breakeven, fee-aware simulated PnL, and an autonomous closed-candle scanner with candle-level idempotency and adaptive DCA parameters. Binance Spot Testnet order execution, exchange-order reconciliation, complete balance/risk dashboards, and live trading remain future work. Autonomous profiles are still simulations and do not establish profitability. Consult [DEPLOYMENT.md](DEPLOYMENT.md) before installing.
+The repository currently contains the manual dashboard, persistent configuration, deterministic paper DCA lifecycle, DCA ladder math, risk guards, authentication, audit events, and paper-deal worker. Binance Spot Testnet execution and exchange-order reconciliation are separate execution work and must be validated before being enabled. No autonomous trading engine is part of the intended architecture.
+
+See [FEATURE_PARITY.md](FEATURE_PARITY.md) for the feature matrix and [DEPLOYMENT.md](DEPLOYMENT.md) for deployment guidance.
 
 ## License
 
