@@ -59,6 +59,14 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
                             "status": deal.status,
                         }),
                     ))
+                if deal.status == "closed" and deal.close_reason == "stop_loss_or_breakeven" and deal.config.end_bot_on_stop_loss:
+                    record = session.get(StrategyRecord, row.strategy_id)
+                    if record is not None and record.enabled:
+                        record.enabled = False
+                        session.add(AuditEvent(
+                            event_type="dca_bot_ended_by_stop_loss",
+                            detail=json.dumps({"config_id": record.id, "deal_id": deal.id, "symbol": deal.symbol}),
+                        ))
                 savepoint.commit()
                 updated.append({"deal": deal.snapshot(), "events": event_types})
             except Exception as exc:
@@ -67,8 +75,6 @@ def tick_active_paper_deals(db: Session | None = None) -> dict[str, list[dict[st
                 logger.warning("DCA deal update failed for %s: %s", row.id, exc)
                 failures.append({"deal_id": row.id, "symbol": row.symbol, "error": "Market update or deal processing failed"})
 
-        # Risk is evaluated after marks are persisted. It only blocks future
-        # manual entries; it never creates an entry itself.
         for record in session.query(StrategyRecord).all():
             try:
                 strategy_risk_status(session, record)
