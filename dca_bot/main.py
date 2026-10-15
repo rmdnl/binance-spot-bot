@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import secrets
-import time
 from contextlib import asynccontextmanager
+from decimal import Decimal as D
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -17,23 +16,15 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .auth import is_authenticated, verify_password
 from .config import get_settings
-from .db import SessionLocal, get_db, init_db
+from .db import get_db, init_db
 from .models import AuditEvent, PaperDealRecord, StrategyRecord, StrategyRiskState
 from .strategy import StrategyConfig
 from .dca_math import build_dca_summary
 from .market_data import BinanceSpotMarketData
-from .autonomous import analyze_market
-from decimal import Decimal as D
+from .paper_engine import deserialize_paper_deal, estimate_unrealized_pnl_quote, serialize_paper_deal, start_paper_deal
 from .worker import run_paper_worker, tick_active_paper_deals
-from .entry_guard import serialized_entry
 from .risk import reserved_capital_quote, strategy_risk_status
-from .paper_engine import (
-    deserialize_paper_deal,
-    estimate_unrealized_pnl_quote,
-    serialize_paper_deal,
-    start_paper_deal,
-    update_paper_deal,
-)
+from .entry_guard import serialized_entry
 
 BASE_DIR = Path(__file__).resolve().parent
 settings = get_settings()
@@ -45,10 +36,12 @@ async def lifespan(_: FastAPI):
     init_db()
     stop_event = asyncio.Event()
     worker_task = None
+    # This worker only manages deals that the user explicitly started.
+    # It never discovers pairs, analyzes signals, or creates entries.
     if settings.trading_mode.lower() == "paper":
         worker_task = asyncio.create_task(
             run_paper_worker(stop_event, settings.paper_poll_interval_seconds),
-            name="dca-paper-worker",
+            name="dca-deal-worker",
         )
     try:
         yield
@@ -60,7 +53,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="DCA Bot",
-    version="0.1.1",
+    version="0.2.0",
     lifespan=lifespan,
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
@@ -95,43 +88,42 @@ def ensure_authenticated(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Authentication required")
 
 
-def estimate_profile_capital(config: StrategyConfig, reference_price: float | None) -> tuple[float | None, float]:
-    """Estimate profile capital, deferring dynamic fixed-coin sizing to each discovered market.
-
-    Automatic USDT discovery uses adaptive DCA parameters per candidate. A profile-level
-    estimate must not reject a ladder that the autonomous analyzer can safely shrink to fit
-    the configured per-deal cap. The scanner validates each candidate's complete ladder
-    against its own price before it can open a paper deal.
-    """
-    if config.pair_selection_mode == "automatic_usdt":
-        return None, config.max_capital_per_deal * config.max_active_deals
-    required = config.estimated_max_deal_capital(reference_price)
-    return required, config.estimated_total_capacity(reference_price)
+def get_or_create_config(db: Session) -> StrategyRecord:
+    """There is exactly one DCA configuration. No strategy profiles exist."""
+    record = db.query(StrategyRecord).order_by(StrategyRecord.id.asc()).first()
+    if record is None:
+        config = StrategyConfig()
+        record = StrategyRecord(name="DCA Configuration", config_json=config.model_dump_json(), enabled=True)
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    return record
 
 
 def render_dashboard(request: Request, db: Session, *, saved: bool = False, error: str | None = None, status_code: int = 200):
-    rows = db.query(StrategyRecord).order_by(StrategyRecord.id.desc()).all()
-    strategies = []
+    record = get_or_create_config(db)
+    config = StrategyConfig.model_validate_json(record.config_json)
+    rows = db.query(PaperDealRecord).order_by(PaperDealRecord.created_at.desc()).limit(50).all()
+    deals = []
     for row in rows:
         try:
-            config = StrategyConfig.model_validate_json(row.config_json)
-            strategies.append({
-                "id": row.id,
-                "name": config.name,
-                "symbols": (["Automatic USDT discovery"] if config.pair_selection_mode == "automatic_usdt" else config.symbols),
-                "enabled": row.enabled,
-                "config": config.model_dump(),
-            })
-        except ValueError:
+            deal = deserialize_paper_deal(row.state_json)
+            snapshot = deal.snapshot()
+            snapshot["unrealized_pnl_quote"] = str(estimate_unrealized_pnl_quote(deal) if deal.status == "active" else D("0"))
+            deals.append(snapshot)
+        except Exception:
             continue
     return templates.TemplateResponse(
         request,
         "dashboard.html",
         {
-            "strategies": strategies,
+            "config": config.model_dump(),
+            "config_id": record.id,
+            "deals": deals,
             "csrf_token": csrf_token(request),
             "saved": saved,
             "error": error,
+            "mode": settings.trading_mode,
         },
         status_code=status_code,
     )
@@ -139,78 +131,19 @@ def render_dashboard(request: Request, db: Session, *, saved: bool = False, erro
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    return {"status": "ok", "mode": settings.trading_mode, "execution": "disabled"}
+    return {"status": "ok", "mode": settings.trading_mode, "autonomous": "disabled"}
 
 
 @app.get("/api/market/ticker")
 def market_ticker(request: Request, symbol: str = "BTC/USDT"):
-    """Authenticated public Binance Spot ticker lookup. Never uses trading credentials."""
     ensure_authenticated(request)
     try:
         ticker = BinanceSpotMarketData().ticker(symbol)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Binance public market data is temporarily unavailable") from exc
-    return {
-        "symbol": ticker.symbol,
-        "last": str(ticker.last),
-        "bid": str(ticker.bid) if ticker.bid is not None else None,
-        "ask": str(ticker.ask) if ticker.ask is not None else None,
-        "timestamp_ms": ticker.timestamp_ms,
-        "market": "spot",
-    }
-
-
-@app.get("/api/strategy/analyze")
-def strategy_analyze(
-    request: Request,
-    symbol: str = "BTC/USDT",
-    timeframe: str = "1h",
-    strategy_id: int | None = None,
-    db: Session = Depends(get_db),
-):
-    """Analyze public Spot candles and suggest adaptive DCA parameters; never places orders."""
-    ensure_authenticated(request)
-    try:
-        normalized = BinanceSpotMarketData.normalize_symbol(symbol)
-        if strategy_id is not None:
-            record = db.get(StrategyRecord, strategy_id)
-            if record is None:
-                raise HTTPException(status_code=404, detail="Strategy not found")
-            config = StrategyConfig.model_validate_json(record.config_json)
-            if normalized not in config.symbols:
-                raise HTTPException(status_code=422, detail="Pair is not included in this strategy")
-        else:
-            config = StrategyConfig.model_validate({"symbols": [normalized], "timeframe": timeframe})
-        if timeframe not in {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"}:
-            raise ValueError("Unsupported Binance Spot candle timeframe")
-        config = config.model_copy(update={"timeframe": timeframe})
-        limit = min(1000, max(config.ema_slow + 50, config.atr_period * 3 + 10, 300))
-        candles = BinanceSpotMarketData().candles(normalized, timeframe, limit=limit)
-        if len(candles) < 2:
-            raise ValueError("Not enough Spot candles to identify the latest closed candle")
-        closed_candles = candles[:-1]
-        timeframe_seconds = {
-            "1m": 60, "3m": 180, "5m": 300, "15m": 900,
-            "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400,
-            "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400,
-        }[timeframe]
-        try:
-            latest_closed_ms = int(closed_candles[-1][0])
-        except (TypeError, ValueError, OverflowError, IndexError) as exc:
-            raise ValueError("Latest closed candle has an invalid timestamp") from exc
-        candle_age_seconds = time.time() - (latest_closed_ms / 1000)
-        if candle_age_seconds < -60 or candle_age_seconds > timeframe_seconds * 2:
-            raise ValueError("Latest closed candle is stale or has a future timestamp")
-        decision = analyze_market(normalized, timeframe, closed_candles, config)
-    except HTTPException:
-        raise
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Binance Spot candle data is temporarily unavailable") from exc
-    return decision.to_dict()
+        raise HTTPException(status_code=502, detail="Binance Spot market data is unavailable") from exc
+    return {"symbol": ticker.symbol, "last": str(ticker.last), "bid": str(ticker.bid) if ticker.bid is not None else None, "ask": str(ticker.ask) if ticker.ask is not None else None, "timestamp_ms": ticker.timestamp_ms, "market": "spot"}
 
 
 @app.get("/api/dca/preview")
@@ -227,262 +160,130 @@ def dca_preview(
     safety_order_base_quantity: str = "0.001",
     dca_mode: str = "position_averaging",
 ):
-    """Authenticated deterministic DCA ladder and capital preview; no orders are placed."""
     ensure_authenticated(request)
     from decimal import Decimal, InvalidOperation
     try:
         summary = build_dca_summary(
-            base_price=Decimal(base_price),
-            base_order_quote=Decimal(base_order_quote),
-            safety_order_quote=Decimal(safety_order_quote),
-            safety_order_count=safety_order_count,
-            initial_deviation_pct=Decimal(initial_deviation_pct),
-            deviation_scale=Decimal(deviation_scale),
-            safety_volume_scale=Decimal(safety_volume_scale),
-            averaging_method=averaging_method,
-            safety_order_base_quantity=Decimal(safety_order_base_quantity),
-            dca_mode=dca_mode,
+            base_price=Decimal(base_price), base_order_quote=Decimal(base_order_quote),
+            safety_order_quote=Decimal(safety_order_quote), safety_order_count=safety_order_count,
+            initial_deviation_pct=Decimal(initial_deviation_pct), deviation_scale=Decimal(deviation_scale),
+            safety_volume_scale=Decimal(safety_volume_scale), averaging_method=averaging_method,
+            safety_order_base_quantity=Decimal(safety_order_base_quantity), dca_mode=dca_mode,
         )
     except (ValueError, InvalidOperation) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
-        "base_price": str(summary.base_price),
-        "base_order_quote": str(summary.base_quote_amount),
+        "base_price": str(summary.base_price), "base_order_quote": str(summary.base_quote_amount),
         "base_quantity": str(summary.base_quantity),
-        "safety_orders": [
-            {
-                "index": level.index,
-                "deviation_pct": str(level.deviation_pct),
-                "price": str(level.price),
-                "quote_amount": str(level.quote_amount),
-                "base_quantity": str(level.base_quantity),
-            }
-            for level in summary.safety_orders
-        ],
-        "total_quote_required": str(summary.total_quote_required),
-        "total_base_quantity": str(summary.total_base_quantity),
-        "average_entry_price": str(summary.average_entry_price),
-        "deepest_deviation_pct": str(summary.deepest_deviation_pct),
-        "average_entry_deviation_pct": str(summary.average_entry_deviation_pct),
-        "execution": "disabled",
+        "safety_orders": [{"index": x.index, "deviation_pct": str(x.deviation_pct), "price": str(x.price), "quote_amount": str(x.quote_amount), "base_quantity": str(x.base_quantity)} for x in summary.safety_orders],
+        "total_quote_required": str(summary.total_quote_required), "total_base_quantity": str(summary.total_base_quantity),
+        "average_entry_price": str(summary.average_entry_price), "deepest_deviation_pct": str(summary.deepest_deviation_pct),
+        "average_entry_deviation_pct": str(summary.average_entry_deviation_pct), "execution": settings.trading_mode,
     }
 
 
-@app.get("/api/paper/deals")
-def paper_deals(request: Request, db: Session = Depends(get_db)):
+@app.get("/api/dca/deals")
+def dca_deals(request: Request, db: Session = Depends(get_db)):
     ensure_authenticated(request)
     rows = db.query(PaperDealRecord).order_by(PaperDealRecord.created_at.desc()).all()
     result = []
     for row in rows:
-        try:
-            deal = deserialize_paper_deal(row.state_json)
-        except (ValueError, KeyError, TypeError) as exc:
-            raise HTTPException(
-                status_code=503,
-                detail="Persisted paper deal state is unreadable; dashboard data is withheld for safety",
-            ) from exc
+        deal = deserialize_paper_deal(row.state_json)
         if row.status != deal.status:
-            raise HTTPException(
-                status_code=503,
-                detail="Persisted paper deal status is inconsistent; dashboard data is withheld for safety",
-            )
+            raise HTTPException(status_code=503, detail="Persisted DCA deal state is inconsistent")
         snapshot = deal.snapshot()
-        if deal.status == "active":
-            snapshot["unrealized_pnl_quote"] = str(
-                estimate_unrealized_pnl_quote(deal)
-            )
-        else:
-            snapshot["unrealized_pnl_quote"] = "0"
+        snapshot["unrealized_pnl_quote"] = str(estimate_unrealized_pnl_quote(deal) if deal.status == "active" else D("0"))
         result.append(snapshot)
-    return {"deals": result, "execution": "paper"}
+    return {"deals": result, "execution": settings.trading_mode}
 
 
-@app.post("/api/paper/deals/start")
+@app.post("/api/dca/deals/start")
 @serialized_entry
-def paper_deal_start(
-    request: Request,
-    csrf: str = Form(..., alias="csrf_token"),
-    strategy_id: int = Form(...),
-    symbol: str = Form(...),
-    db: Session = Depends(get_db),
-):
+def dca_deal_start(request: Request, csrf: str = Form(..., alias="csrf_token"), symbol: str = Form(...), db: Session = Depends(get_db)):
     ensure_authenticated(request)
     check_csrf(request, csrf)
-    record = db.get(StrategyRecord, strategy_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Strategy not found")
+    record = get_or_create_config(db)
     try:
-        risk_status = strategy_risk_status(db, record)
-        if risk_status["blocked"]:
-            db.add(AuditEvent(
-                event_type="risk_entry_blocked",
-                detail=json.dumps({"strategy_id": strategy_id, "reason": risk_status["reason"], "source": "manual"}),
-            ))
-            db.commit()
-            raise HTTPException(status_code=409, detail=str(risk_status["reason"]))
         config = StrategyConfig.model_validate_json(record.config_json)
         normalized = BinanceSpotMarketData.normalize_symbol(symbol)
+        if normalized not in config.symbols:
+            raise ValueError("Pair is not in the manually configured pair list")
+        risk_status = strategy_risk_status(db, record)
+        if risk_status["blocked"]:
+            raise ValueError(str(risk_status["reason"]))
         active_rows = db.query(PaperDealRecord).filter_by(status="active").all()
-        strategy_deals = []
-        symbol_active = 0
-        for active_row in active_rows:
-            active_deal = deserialize_paper_deal(active_row.state_json)
-            if active_row.strategy_id == strategy_id:
-                strategy_deals.append(active_deal)
-                if active_deal.symbol == normalized:
-                    symbol_active += 1
-        if len(strategy_deals) >= config.max_active_deals:
-            raise ValueError("Maximum active deals for this strategy reached")
-        if symbol_active >= config.max_active_deals_per_symbol:
-            raise ValueError("Maximum active deals for this pair reached")
-        reserved = reserved_capital_quote(strategy_deals)
-        new_reservation = D(str(config.max_capital_per_deal))
-        total_cap = D(str(config.max_total_allocation))
-        if reserved + new_reservation > total_cap:
-            raise ValueError(
-                "Total allocation cap would be exceeded by active and new deal reservations"
-            )
+        active_deals = [deserialize_paper_deal(row.state_json) for row in active_rows]
+        if len(active_deals) >= config.max_active_deals:
+            raise ValueError("Maximum active DCA deals reached")
+        if sum(1 for deal in active_deals if deal.symbol == normalized) >= config.max_active_deals_per_symbol:
+            raise ValueError("This pair already has an active DCA deal")
+        if reserved_capital_quote(active_deals) + D(str(config.max_capital_per_deal)) > D(str(config.max_total_allocation)):
+            raise ValueError("Total allocation cap would be exceeded")
         ticker = BinanceSpotMarketData().ticker(normalized)
         deal = start_paper_deal(config, normalized, ticker.last)
-    except HTTPException:
-        raise
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Risk state or Spot market data unavailable; entry blocked") from exc
-    db.add(PaperDealRecord(
-        id=deal.id,
-        strategy_id=strategy_id,
-        symbol=deal.symbol,
-        status=deal.status,
-        state_json=serialize_paper_deal(deal),
-    ))
-    db.add(AuditEvent(
-        event_type="paper_deal_started",
-        detail=json.dumps({"deal_id": deal.id, "strategy_id": strategy_id, "symbol": deal.symbol, "base_price": str(deal.base_price)}),
-    ))
+        raise HTTPException(status_code=503, detail="DCA entry blocked because market/risk state is unavailable") from exc
+
+    db.add(PaperDealRecord(id=deal.id, strategy_id=record.id, symbol=deal.symbol, status=deal.status, state_json=serialize_paper_deal(deal)))
+    db.add(AuditEvent(event_type="dca_deal_started", detail=json.dumps({"deal_id": deal.id, "symbol": deal.symbol, "price": str(deal.base_price)})))
     db.commit()
-    return {"deal": deal.snapshot(), "execution": "paper", "orders_sent_to_exchange": False}
+    return {"deal": deal.snapshot(), "execution": settings.trading_mode, "orders_sent_to_exchange": False}
+
+
+@app.post("/api/dca/deals/tick")
+def dca_deal_tick(request: Request, csrf: str = Form(..., alias="csrf_token"), db: Session = Depends(get_db)):
+    ensure_authenticated(request)
+    check_csrf(request, csrf)
+    return {**tick_active_paper_deals(db), "execution": settings.trading_mode, "orders_sent_to_exchange": False}
 
 
 @app.get("/api/risk/status")
-def paper_risk_status(request: Request, db: Session = Depends(get_db)):
-    """Return paper-equity guard status for dashboard display; never touches exchange orders."""
+def dca_risk_status(request: Request, db: Session = Depends(get_db)):
     ensure_authenticated(request)
-    result = []
-    records = db.query(StrategyRecord).order_by(StrategyRecord.id.asc()).all()
-    for record in records:
-        try:
-            status = strategy_risk_status(db, record)
-            result.append({
-                "strategy_id": record.id,
-                "name": record.name,
-                "status": "blocked" if status["blocked"] else "clear",
-                **status,
-            })
-        except Exception:
-            logging.exception("Risk status unavailable for strategy %s", record.id)
-            result.append({
-                "strategy_id": record.id,
-                "name": record.name,
-                "status": "error",
-                "blocked": True,
-                "reason": "Risk evaluation failed; new entries must remain blocked",
-                "drawdown_tripped": None,
-                "daily_loss_tripped": None,
-            })
+    record = get_or_create_config(db)
     try:
-        db.commit()
+        status = strategy_risk_status(db, record)
     except Exception as exc:
-        db.rollback()
-        raise HTTPException(status_code=503, detail="Risk status could not be persisted") from exc
-    return {
-        "risk_model": "virtual_paper_equity",
-        "mark_source": "last persisted paper-deal price",
-        "daily_loss_timezone": "UTC",
-        "entries_enabled": not any(item["blocked"] for item in result),
-        "strategies": result,
-        "execution": "paper",
-    }
+        raise HTTPException(status_code=503, detail="Risk evaluation failed closed") from exc
+    return {"status": "blocked" if status["blocked"] else "clear", **status, "execution": settings.trading_mode}
 
 
 @app.post("/api/risk/reset-drawdown")
-def reset_drawdown_guard(
-    request: Request,
-    csrf: str = Form(..., alias="csrf_token"),
-    strategy_id: int = Form(...),
-    db: Session = Depends(get_db),
-):
-    """Admin-only reset for the latched paper-equity drawdown breaker."""
+def reset_drawdown_guard(request: Request, csrf: str = Form(..., alias="csrf_token"), db: Session = Depends(get_db)):
     ensure_authenticated(request)
     check_csrf(request, csrf)
-    record = db.get(StrategyRecord, strategy_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Strategy not found")
+    record = get_or_create_config(db)
     try:
         status = strategy_risk_status(db, record)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Risk state unavailable; reset refused") from exc
     if status["daily_loss_tripped"]:
-        db.commit()
-        raise HTTPException(status_code=409, detail="Daily loss limit remains tripped; reset refused")
-    state = db.get(StrategyRiskState, strategy_id)
+        raise HTTPException(status_code=409, detail="Daily loss limit remains tripped")
+    state = db.get(StrategyRiskState, record.id)
     if state is None:
-        db.commit()
         raise HTTPException(status_code=409, detail="Risk state is not initialized")
     state.drawdown_tripped = False
     state.drawdown_trip_reason = None
     state.peak_equity_quote = str(status["equity_quote"])
-    db.add(AuditEvent(
-        event_type="risk_drawdown_reset",
-        detail=json.dumps({
-            "strategy_id": strategy_id,
-            "equity_quote": status["equity_quote"],
-            "actor": "admin",
-        }),
-    ))
+    db.add(AuditEvent(event_type="risk_drawdown_reset", detail=json.dumps({"config_id": record.id, "equity_quote": status["equity_quote"]})))
     db.commit()
-    return {"strategy_id": strategy_id, "drawdown_tripped": False, "peak_equity_quote": state.peak_equity_quote}
-
-
-@app.post("/api/paper/deals/tick")
-def paper_deal_tick(
-    request: Request,
-    csrf: str = Form(..., alias="csrf_token"),
-    db: Session = Depends(get_db),
-):
-    ensure_authenticated(request)
-    check_csrf(request, csrf)
-    result = tick_active_paper_deals(db)
-    return {**result, "execution": "paper", "orders_sent_to_exchange": False}
+    return {"drawdown_tripped": False, "peak_equity_quote": state.peak_equity_quote}
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     if is_authenticated(request):
         return RedirectResponse("/", status_code=303)
-    return templates.TemplateResponse(
-        request, "login.html", {"error": None, "csrf_token": csrf_token(request)}
-    )
+    return templates.TemplateResponse(request, "login.html", {"error": None, "csrf_token": csrf_token(request)})
 
 
 @app.post("/login", response_class=HTMLResponse)
-def login(
-    request: Request,
-    password: str = Form(...),
-    csrf: str = Form(..., alias="csrf_token"),
-):
+def login(request: Request, password: str = Form(...), csrf: str = Form(..., alias="csrf_token")):
     check_csrf(request, csrf)
     if not verify_password(password, settings.admin_password_hash):
-        return templates.TemplateResponse(
-            request,
-            "login.html",
-            {
-                "error": "Invalid credentials or dashboard not configured.",
-                "csrf_token": csrf_token(request),
-            },
-            status_code=401,
-        )
+        return templates.TemplateResponse(request, "login.html", {"error": "Invalid credentials or dashboard not configured.", "csrf_token": csrf_token(request)}, status_code=401)
     request.session.clear()
     request.session["authenticated"] = True
     request.session["csrf_token"] = secrets.token_urlsafe(32)
@@ -497,185 +298,59 @@ def logout(request: Request, csrf: str = Form(..., alias="csrf_token")):
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(
-    request: Request,
-    db: Session = Depends(get_db),
-    saved: bool = False,
-):
+def dashboard(request: Request, db: Session = Depends(get_db), saved: bool = False):
     if not is_authenticated(request):
         return RedirectResponse("/login", status_code=303)
     return render_dashboard(request, db, saved=saved)
 
 
-@app.post("/strategies/save", response_class=HTMLResponse)
-def save_strategy(
-    request: Request,
-    csrf: str = Form(..., alias="csrf_token"),
-    strategy_id: str = Form(""),
-    reference_price: str = Form(""),
-    name: str = Form(...),
-    symbols: str = Form("BTCUSDT"),
-    pair_selection_mode: str = Form("manual"),
-    discovery_min_quote_volume_24h: float = Form(5_000_000),
-    discovery_max_spread_pct: float = Form(0.25),
-    discovery_max_candidates: int = Form(10),
-    base_order_quote: float = Form(...),
-    safety_order_quote: float = Form(...),
-    max_safety_orders: int = Form(...),
-    take_profit_pct: float = Form(...),
-    take_profit_basis: str = Form("average_entry"),
-    dca_mode: str = Form("position_averaging"),
-    averaging_method: str = Form("fixed_order_value"),
-    safety_order_base_quantity: float = Form(0.001),
-    initial_deviation_pct: float = Form(...),
-    max_active_deals: int = Form(...),
-    order_size_mode: str = Form("fixed_quote"),
-    base_order_balance_pct: float = Form(1),
-    safety_order_volume_scale: float = Form(1.5),
-    deviation_scale: float = Form(1.5),
-    trailing_take_profit_enabled: bool = Form(False),
-    trailing_activation_pct: float = Form(1),
-    trailing_callback_pct: float = Form(0.3),
-    stop_loss_enabled: bool = Form(False),
-    stop_loss_pct: float = Form(10),
-    stop_loss_basis: str = Form("base_order"),
-    move_stop_to_breakeven_enabled: bool = Form(False),
-    breakeven_activation_pct: float = Form(1),
-    breakeven_offset_pct: float = Form(0),
-    reinvest_profit: bool = Form(False),
-    max_deal_duration_hours: int = Form(0),
-    start_condition: str = Form("manual"),
-    auto_paper_enabled: bool = Form(False),
-    entry_filter: str = Form("manual"),
-    timeframe: str = Form("1h"),
-    ema_fast: int = Form(50),
-    ema_slow: int = Form(200),
-    rsi_period: int = Form(14),
-    rsi_max_entry: float = Form(40),
-    adx_min: float = Form(20),
-    atr_period: int = Form(14),
-    cooldown_seconds: int = Form(300),
-    order_timeout_seconds: int = Form(60),
-    max_capital_per_deal: float = Form(200),
-    max_total_allocation: float = Form(600),
-    reserve_balance: float = Form(20),
-    daily_loss_limit_quote: float = Form(25),
-    max_equity_drawdown_pct: float = Form(5),
-    min_net_profit_pct: float = Form(0.3),
-    fee_rate_pct_per_side: float = Form(0.1),
-    slippage_pct_per_side: float = Form(0.05),
-    retry_limit: int = Form(3),
-    reconciliation_seconds: int = Form(30),
-    order_type: str = Form("limit"),
+@app.post("/dca/save", response_class=HTMLResponse)
+def save_dca(
+    request: Request, csrf: str = Form(..., alias="csrf_token"), symbols: str = Form("BTCUSDT"),
+    base_order_quote: float = Form(10), safety_order_quote: float = Form(10), max_safety_orders: int = Form(4),
+    take_profit_pct: float = Form(1), take_profit_basis: str = Form("average_entry"), initial_deviation_pct: float = Form(1),
+    deviation_scale: float = Form(1.5), safety_order_volume_scale: float = Form(1.5), dca_mode: str = Form("position_averaging"),
+    averaging_method: str = Form("fixed_order_value"), safety_order_base_quantity: float = Form(0.001),
+    trailing_take_profit_enabled: bool = Form(False), trailing_activation_pct: float = Form(1), trailing_callback_pct: float = Form(0.3),
+    stop_loss_enabled: bool = Form(False), stop_loss_pct: float = Form(10), stop_loss_basis: str = Form("base_order"),
+    move_stop_to_breakeven_enabled: bool = Form(False), breakeven_activation_pct: float = Form(1), breakeven_offset_pct: float = Form(0),
+    reinvest_profit: bool = Form(False), max_deal_duration_hours: int = Form(0), max_active_deals: int = Form(3),
+    max_active_deals_per_symbol: int = Form(1), max_capital_per_deal: float = Form(200), max_total_allocation: float = Form(600),
+    reserve_balance: float = Form(20), daily_loss_limit_quote: float = Form(25), max_equity_drawdown_pct: float = Form(5),
+    min_net_profit_pct: float = Form(0.3), fee_rate_pct_per_side: float = Form(0.1), slippage_pct_per_side: float = Form(0.05),
     db: Session = Depends(get_db),
 ):
     ensure_authenticated(request)
     check_csrf(request, csrf)
     try:
-        if auto_paper_enabled and start_condition != "autonomous":
-            raise ValueError("Autonomous paper mode requires the Autonomous start condition.")
+        normalized_symbols = [x.strip() for x in symbols.split(",") if x.strip()]
         config = StrategyConfig(
-            name=name,
-            symbols=[item.strip() for item in symbols.split(",") if item.strip()] or ["BTC/USDT"],
-            pair_selection_mode=pair_selection_mode,
-            discovery_min_quote_volume_24h=discovery_min_quote_volume_24h,
-            discovery_max_spread_pct=discovery_max_spread_pct,
-            discovery_max_candidates=discovery_max_candidates,
-            base_order_quote=base_order_quote,
-            safety_order_quote=safety_order_quote,
-            max_safety_orders=max_safety_orders,
-            take_profit_pct=take_profit_pct,
-            take_profit_basis=take_profit_basis,
-            dca_mode=dca_mode,
-            averaging_method=averaging_method,
-            safety_order_base_quantity=safety_order_base_quantity,
-            initial_deviation_pct=initial_deviation_pct,
-            max_active_deals=max_active_deals,
-            order_size_mode=order_size_mode,
-            base_order_balance_pct=base_order_balance_pct,
-            safety_order_volume_scale=safety_order_volume_scale,
-            deviation_scale=deviation_scale,
-            trailing_take_profit_enabled=trailing_take_profit_enabled,
-            trailing_activation_pct=trailing_activation_pct,
-            trailing_callback_pct=trailing_callback_pct,
-            stop_loss_enabled=stop_loss_enabled,
-            stop_loss_pct=stop_loss_pct,
-            stop_loss_basis=stop_loss_basis,
-            move_stop_to_breakeven_enabled=move_stop_to_breakeven_enabled,
-            breakeven_activation_pct=breakeven_activation_pct,
-            breakeven_offset_pct=breakeven_offset_pct,
-            reinvest_profit=reinvest_profit,
-            max_deal_duration_hours=max_deal_duration_hours,
-            start_condition=start_condition,
-            entry_filter=entry_filter,
-            timeframe=timeframe,
-            ema_fast=ema_fast,
-            ema_slow=ema_slow,
-            rsi_period=rsi_period,
-            rsi_max_entry=rsi_max_entry,
-            adx_min=adx_min,
-            atr_period=atr_period,
-            cooldown_seconds=cooldown_seconds,
-            order_timeout_seconds=order_timeout_seconds,
-            max_capital_per_deal=max_capital_per_deal,
-            max_total_allocation=max_total_allocation,
-            reserve_balance=reserve_balance,
-            daily_loss_limit_quote=daily_loss_limit_quote,
-            max_equity_drawdown_pct=max_equity_drawdown_pct,
-            min_net_profit_pct=min_net_profit_pct,
-            fee_rate_pct_per_side=fee_rate_pct_per_side,
-            slippage_pct_per_side=slippage_pct_per_side,
-            retry_limit=retry_limit,
-            reconciliation_seconds=reconciliation_seconds,
-            order_type=order_type,
+            name="DCA Configuration", symbols=normalized_symbols, pair_selection_mode="manual",
+            base_order_quote=base_order_quote, safety_order_quote=safety_order_quote, max_safety_orders=max_safety_orders,
+            take_profit_pct=take_profit_pct, take_profit_basis=take_profit_basis, initial_deviation_pct=initial_deviation_pct,
+            deviation_scale=deviation_scale, safety_order_volume_scale=safety_order_volume_scale, dca_mode=dca_mode,
+            averaging_method=averaging_method, safety_order_base_quantity=safety_order_base_quantity,
+            trailing_take_profit_enabled=trailing_take_profit_enabled, trailing_activation_pct=trailing_activation_pct,
+            trailing_callback_pct=trailing_callback_pct, stop_loss_enabled=stop_loss_enabled, stop_loss_pct=stop_loss_pct,
+            stop_loss_basis=stop_loss_basis, move_stop_to_breakeven_enabled=move_stop_to_breakeven_enabled,
+            breakeven_activation_pct=breakeven_activation_pct, breakeven_offset_pct=breakeven_offset_pct,
+            reinvest_profit=reinvest_profit, max_deal_duration_hours=max_deal_duration_hours,
+            max_active_deals=max_active_deals, max_active_deals_per_symbol=max_active_deals_per_symbol,
+            max_capital_per_deal=max_capital_per_deal, max_total_allocation=max_total_allocation, reserve_balance=reserve_balance,
+            daily_loss_limit_quote=daily_loss_limit_quote, max_equity_drawdown_pct=max_equity_drawdown_pct,
+            min_net_profit_pct=min_net_profit_pct, fee_rate_pct_per_side=fee_rate_pct_per_side, slippage_pct_per_side=slippage_pct_per_side,
         )
-        price_for_estimate = float(reference_price) if reference_price.strip() else None
-        required_capital, total_capacity = estimate_profile_capital(config, price_for_estimate)
-        if required_capital is not None and required_capital > config.max_capital_per_deal:
-            raise ValueError(
-                f"Estimated deal capital ({required_capital:.2f} USDT) exceeds "
-                f"max capital per deal ({config.max_capital_per_deal:.2f} USDT)."
-            )
-        if config.max_capital_per_deal * config.max_active_deals > config.max_total_allocation:
-            raise ValueError(
-                "Max capital per deal multiplied by active deals exceeds total allocation cap."
-            )
         if config.estimated_net_tp_pct() < config.min_net_profit_pct:
-            raise ValueError(
-                "Estimated net take profit is below the configured minimum after fee/slippage assumptions."
-            )
+            raise ValueError("Net take-profit estimate is below the configured minimum")
+        if config.max_capital_per_deal * config.max_active_deals > config.max_total_allocation:
+            raise ValueError("Per-deal capital multiplied by active deals exceeds total allocation")
     except Exception as exc:
-        return render_dashboard(
-            request, db, error=str(exc), status_code=422
-        )
+        return render_dashboard(request, db, error=str(exc), status_code=422)
 
-    record = None
-    if strategy_id:
-        try:
-            record_id = int(strategy_id)
-            record = db.get(StrategyRecord, record_id)
-        except (ValueError, TypeError):
-            record = None
-        if record is None:
-            raise HTTPException(status_code=404, detail="Strategy not found")
-    else:
-        record = StrategyRecord(name=config.name, config_json=config.model_dump_json(), enabled=False)
-        db.add(record)
-        db.flush()
-
-    record.name = config.name
+    record = get_or_create_config(db)
+    record.name = "DCA Configuration"
     record.config_json = config.model_dump_json()
-    # This flag enables only the paper-mode autonomous worker; exchange execution remains disabled.
-    record.enabled = auto_paper_enabled
-    db.add(AuditEvent(
-        event_type="strategy_saved",
-        detail=json.dumps({
-            "id": record.id,
-            "name": config.name,
-            "symbols": config.symbols,
-            "estimated_deal_capital": required_capital,
-            "estimated_total_capacity": total_capacity,
-        }),
-    ))
+    record.enabled = True
+    db.add(AuditEvent(event_type="dca_config_saved", detail=json.dumps({"config_id": record.id, "symbols": config.symbols})))
     db.commit()
-    return RedirectResponse("/?saved=true#strategies", status_code=303)
+    return RedirectResponse("/?saved=true", status_code=303)
