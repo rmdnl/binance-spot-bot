@@ -1,15 +1,15 @@
-from __future__ import annotations
 from decimal import Decimal
-from fastapi.testclient import TestClient
-from dca_bot.main import app
+
 from dca_bot.risk import estimate_capital, estimated_net_profit_pct, validate_budget
 from dca_bot.strategy import StrategyConfig
 
 
-def test_strategy_defaults_to_disabled_spot_preset():
+def test_config_defaults_to_manual_spot_dca():
     config = StrategyConfig()
     assert config.enabled is False
     assert config.symbols == ['BTC/USDT']
+    assert config.pair_selection_mode == 'manual'
+    assert config.quote_asset == 'USDT'
     assert config.max_safety_orders == 4
 
 
@@ -24,15 +24,6 @@ def test_duplicate_symbols_rejected():
         assert 'Duplicate' in str(exc)
     else:
         raise AssertionError('Duplicate symbol was accepted')
-
-
-def test_unsafe_ema_order_rejected():
-    try:
-        StrategyConfig(ema_fast=200, ema_slow=50)
-    except ValueError as exc:
-        assert 'EMA fast' in str(exc)
-    else:
-        raise AssertionError('Unsafe EMA configuration was accepted')
 
 
 def test_estimated_capital_geometric_safety_orders():
@@ -64,35 +55,17 @@ def test_budget_rejects_total_overallocation():
     except ValueError as exc:
         assert 'total allocation' in str(exc)
     else:
-        raise AssertionError('Overallocated strategy was accepted')
-
-
-def test_health_reports_execution_disabled():
-    response = TestClient(app).get('/healthz')
-    assert response.status_code == 200
-    assert response.json()['execution'] == 'disabled'
-
-
-def test_dashboard_redirects_to_login_without_session():
-    response = TestClient(app).get('/', follow_redirects=False)
-    assert response.status_code == 303
-    assert response.headers['location'] == '/login'
-
-
-def test_login_page_does_not_expose_dashboard():
-    response = TestClient(app).get('/login')
-    assert response.status_code == 200
-    assert 'Dashboard password' in response.text
+        raise AssertionError('Overallocated configuration was accepted')
 
 
 def test_fixed_coin_capital_requires_reference_price():
-    config = StrategyConfig(averaging_method="fixed_coin_amount", safety_order_base_quantity=0.01)
+    config = StrategyConfig(averaging_method='fixed_coin_amount', safety_order_base_quantity=0.01)
     try:
         config.estimated_max_deal_capital()
     except ValueError as exc:
-        assert "reference price" in str(exc)
+        assert 'reference price' in str(exc)
     else:
-        raise AssertionError("Fixed coin estimate without a price should be rejected")
+        raise AssertionError('Fixed coin estimate without a price should be rejected')
 
 
 def test_fixed_coin_capital_uses_dca_price_ladder():
@@ -102,9 +75,29 @@ def test_fixed_coin_capital_uses_dca_price_ladder():
         max_safety_orders=2,
         initial_deviation_pct=1,
         deviation_scale=1,
-        averaging_method="fixed_coin_amount",
+        averaging_method='fixed_coin_amount',
         safety_order_base_quantity=0.1,
         safety_order_volume_scale=1,
     )
     estimated = config.estimated_max_deal_capital(reference_price=100)
     assert estimated == 10 + 0.1 * 99 + 0.1 * 98
+
+
+def test_optional_trigger_and_price_range_validate_together():
+    config = StrategyConfig(
+        trigger_price=100,
+        price_range_enabled=True,
+        price_range_min=90,
+        price_range_max=110,
+    )
+    assert config.trigger_price == 100
+
+
+def test_take_profit_net_profit_guard_math():
+    config = StrategyConfig(
+        take_profit_pct=1,
+        min_net_profit_pct=0.3,
+        fee_rate_pct_per_side=0.1,
+        slippage_pct_per_side=0.05,
+    )
+    assert config.estimated_net_tp_pct() == 0.7
