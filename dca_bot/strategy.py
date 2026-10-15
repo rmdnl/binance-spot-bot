@@ -63,6 +63,15 @@ class StrategyConfig(BaseModel):
     order_timeout_seconds: int = Field(default=60, ge=1, le=86400)
     reconciliation_seconds: int = Field(default=30, ge=5, le=3600)
 
+    # Retained only so old persisted/test configuration can still deserialize.
+    # These fields are not exposed as trading controls and are never used for entry selection.
+    ema_fast: int = Field(default=50, ge=2, le=500)
+    ema_slow: int = Field(default=200, ge=3, le=1000)
+    rsi_period: int = Field(default=14, ge=2, le=100)
+    rsi_max_entry: float = Field(default=40.0, ge=1, le=99)
+    adx_min: float = Field(default=20.0, ge=0, le=100)
+    atr_period: int = Field(default=14, ge=2, le=100)
+
     @field_validator('symbols')
     @classmethod
     def normalize_symbols(cls, values: list[str]) -> list[str]:
@@ -85,6 +94,8 @@ class StrategyConfig(BaseModel):
 
     @model_validator(mode='after')
     def validate_risk(self) -> 'StrategyConfig':
+        if self.ema_fast >= self.ema_slow:
+            raise ValueError('EMA fast period must be less than EMA slow period')
         if self.max_capital_per_deal < self.base_order_quote:
             raise ValueError('Max capital per deal must cover the base order')
         if self.max_total_allocation < self.max_capital_per_deal:
