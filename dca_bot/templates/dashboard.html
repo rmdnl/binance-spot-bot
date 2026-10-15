@@ -17,45 +17,39 @@
 </aside>
 <main class="main">
 <header class="topbar"><div><p class="eyebrow">YOUR DCA WORKSPACE</p><h1>DCA Bot <span class="live-dot"></span></h1></div><div class="top-actions"><span class="status-chip"><i></i> {{ mode|upper }}</span><span class="avatar">D</span></div></header>
-
 <section id="overview" class="welcome">
 <div><p class="eyebrow accent">MANUAL · DETERMINISTIC · CONTROLLED</p><h2>Your pairs.<br><em>Your rules.</em></h2><p class="muted">No autonomous scanner. No signal engine. No strategy profiles. You choose the pairs and every DCA parameter from this dashboard.</p><a class="button primary" href="#configuration">Configure DCA <span>↗</span></a></div>
 <div class="hero-art"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="chart-label">MANUAL ENTRY / NO AUTO DISCOVERY</div><svg viewBox="0 0 420 220" role="img" aria-label="Decorative price chart"><path d="M8 180 L50 148 L86 158 L120 110 L157 127 L201 72 L241 103 L278 52 L318 82 L360 30 L410 48" fill="none" stroke="#ac9dff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="floating-note"><span class="note-icon">⚙</span><span><b>Manual DCA</b><small>Dashboard controlled</small></span></div></div>
 </section>
-
 <section class="metrics">
-<article class="metric"><div class="metric-head"><span>Configured pairs</span><span>◈</span></div><h3>{{ config.symbols|length }} <small>pairs</small></h3><p class="muted">Manual USDT list</p><div class="metric-foot">● Automatic discovery off</div></article>
+<article class="metric"><div class="metric-head"><span>Configured pairs</span><span>◈</span></div><h3>{{ config.symbols|length }} <small>pairs</small></h3><p class="muted">Manual pair list</p><div class="metric-foot">● Automatic discovery off</div></article>
 <article class="metric"><div class="metric-head"><span>Active deals</span><span>▦</span></div><h3>{{ deals|selectattr('status','equalto','active')|list|length }} <small>deals</small></h3><p class="muted">User-started only</p><div class="metric-foot neutral">No automatic entries</div></article>
-<article class="metric"><div class="metric-head"><span>Capital / deal</span><span>◎</span></div><h3>{{ config.max_capital_per_deal }} <small>USDT</small></h3><p class="muted">Configured ceiling</p><div class="metric-foot neutral">Risk guard enabled</div></article>
+<article class="metric"><div class="metric-head"><span>Capital / deal</span><span>◎</span></div><h3>{{ config.max_capital_per_deal }} <small>quote</small></h3><p class="muted">Configured ceiling</p><div class="metric-foot neutral">Risk guard enabled</div></article>
 <article class="metric"><div class="metric-head"><span>Take profit</span><span>↗</span></div><h3>{{ config.take_profit_pct }}<small>%</small></h3><p class="muted">{{ config.take_profit_basis|replace('_',' ') }}</p><div class="metric-foot">● Manual configuration</div></article>
 </section>
-
 {% if saved %}<div class="success">DCA configuration saved.</div>{% endif %}
 {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
-
 <section class="panel editor-panel" id="configuration">
-<div class="section-heading"><div><p class="eyebrow">DCA CONFIGURATION</p><h2>Configure your bot</h2><p class="muted">One configuration, manually selected USDT pairs, no strategy layer.</p></div><span class="draft-chip">SAVED TO DATABASE</span></div>
+<div class="section-heading"><div><p class="eyebrow">DCA CONFIGURATION</p><h2>Configure your bot</h2><p class="muted">One configuration, manually selected spot pairs, no autonomous strategy layer.</p></div><span class="draft-chip">SAVED TO DATABASE</span></div>
 <form id="dca-form" action="/dca/save" method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 <div class="segmented"><button type="button" class="segment active" data-tab="basic">Basic</button><button type="button" class="segment" data-tab="advanced">Advanced</button><button type="button" class="segment" data-tab="risk">Risk & execution</button></div>
-
 <div class="tab-content active" data-panel="basic"><div class="form-grid">
-<label class="field span-2">Pair(s) (USDT)<input name="symbols" value="{{ config.symbols|join(', ') }}" required><small>Manual only. Example: BTCUSDT, ETHUSDT, SOL/USDT. The bot never discovers pairs.</small></label>
-<label class="field">Base Order Size (USDT)<input name="base_order_quote" type="number" min="0.01" step="0.01" value="{{ config.base_order_quote }}" required></label>
-<label class="field">DCA Order Size (USDT)<input name="safety_order_quote" type="number" min="0.01" step="0.01" value="{{ config.safety_order_quote }}" required></label>
+<label class="field span-2">Pair(s)<input name="symbols" value="{{ config.symbols|join(', ') }}" required><small>Manual only. Use BASE/QUOTE format, for example BTC/USDT, ETH/BTC, or SOL/USDC. The bot never discovers pairs.</small></label>
+<label class="field">Base Order Size (quote)<input name="base_order_quote" type="number" min="0.01" step="0.01" value="{{ config.base_order_quote }}" required></label>
+<label class="field">DCA Order Size (quote)<input name="safety_order_quote" type="number" min="0.01" step="0.01" value="{{ config.safety_order_quote }}" required></label>
 <label class="field">Max DCA Orders<input name="max_safety_orders" type="number" min="0" max="30" value="{{ config.max_safety_orders }}" required></label>
 <label class="field">Price Drop Step (%)<input name="initial_deviation_pct" type="number" min="0.01" max="50" step="0.01" value="{{ config.initial_deviation_pct }}" required></label>
 <label class="field">Price Deviation Multiplier<input name="deviation_scale" type="number" min="1" max="10" step="0.1" value="{{ config.deviation_scale }}" required><small>1.0 = fixed spacing; above 1.0 widens each next step.</small></label>
 <label class="field">DCA Order Size Multiplier<input name="safety_order_volume_scale" type="number" min="1" max="10" step="0.1" value="{{ config.safety_order_volume_scale }}" required><small>1.0 = fixed DCA size.</small></label>
 <label class="field">Take Profit (%)<input name="take_profit_pct" type="number" min="0.01" max="100" step="0.01" value="{{ config.take_profit_pct }}" required></label>
 <label class="field">Take-profit basis<select name="take_profit_basis"><option value="average_entry" {% if config.take_profit_basis == 'average_entry' %}selected{% endif %}>Average entry</option><option value="base_order" {% if config.take_profit_basis == 'base_order' %}selected{% endif %}>Base order</option></select></label>
-<label class="field">DCA sizing method<select name="averaging_method"><option value="fixed_order_value" {% if config.averaging_method == 'fixed_order_value' %}selected{% endif %}>Fixed USDT order value</option><option value="fixed_coin_amount" {% if config.averaging_method == 'fixed_coin_amount' %}selected{% endif %}>Fixed coin amount</option></select></label>
+<label class="field">DCA sizing method<select name="averaging_method"><option value="fixed_order_value" {% if config.averaging_method == 'fixed_order_value' %}selected{% endif %}>Fixed quote order value</option><option value="fixed_coin_amount" {% if config.averaging_method == 'fixed_coin_amount' %}selected{% endif %}>Fixed coin amount</option></select></label>
 <label class="field">DCA quantity base<input name="safety_order_base_quantity" type="number" min="0.00000001" step="any" value="{{ config.safety_order_base_quantity }}"></label>
 <label class="field">DCA accounting mode<select name="dca_mode"><option value="position_averaging" {% if config.dca_mode == 'position_averaging' %}selected{% endif %}>Position averaging</option><option value="order_averaging" {% if config.dca_mode == 'order_averaging' %}selected{% endif %}>Order averaging</option></select></label>
 <label class="field">Maximum active deals<input name="max_active_deals" type="number" min="1" max="100" value="{{ config.max_active_deals }}"></label>
 <label class="field">Maximum deals per pair<input name="max_active_deals_per_symbol" type="number" min="1" max="20" value="{{ config.max_active_deals_per_symbol }}"></label>
 </div></div>
-
 <div class="tab-content" data-panel="advanced"><div class="form-grid">
 <label class="field">Trigger Price (optional)<input name="trigger_price" type="number" min="0.00000001" step="any" value="{{ config.trigger_price if config.trigger_price is not none else '' }}"><small>Manual START is accepted only when market price is at or below this trigger.</small></label>
 <label class="field">Cooldown Between Rounds (seconds)<input name="cooldown_seconds" type="number" min="0" max="31536000" value="{{ config.cooldown_seconds }}"><small>0 = no cooldown.</small></label>
@@ -75,12 +69,11 @@
 <label class="field">Reinvest profit<select name="reinvest_profit"><option value="false" {% if not config.reinvest_profit %}selected{% endif %}>Disabled</option><option value="true" {% if config.reinvest_profit %}selected{% endif %}>Enabled</option></select></label>
 <label class="field">Maximum deal duration (hours)<input name="max_deal_duration_hours" type="number" min="0" max="8760" value="{{ config.max_deal_duration_hours }}"><small>0 = disabled.</small></label>
 </div></div>
-
 <div class="tab-content" data-panel="risk"><div class="form-grid">
-<label class="field">Max capital / deal (USDT)<input name="max_capital_per_deal" type="number" min="0.01" step="0.01" value="{{ config.max_capital_per_deal }}"></label>
-<label class="field">Max total allocation (USDT)<input name="max_total_allocation" type="number" min="0.01" step="0.01" value="{{ config.max_total_allocation }}"></label>
-<label class="field">Reserve balance (USDT)<input name="reserve_balance" type="number" min="0" step="0.01" value="{{ config.reserve_balance }}"></label>
-<label class="field">Daily loss limit (USDT)<input name="daily_loss_limit_quote" type="number" min="0.01" step="0.01" value="{{ config.daily_loss_limit_quote }}"></label>
+<label class="field">Max capital / deal (quote)<input name="max_capital_per_deal" type="number" min="0.01" step="0.01" value="{{ config.max_capital_per_deal }}"></label>
+<label class="field">Max total allocation (quote)<input name="max_total_allocation" type="number" min="0.01" step="0.01" value="{{ config.max_total_allocation }}"></label>
+<label class="field">Reserve balance (quote)<input name="reserve_balance" type="number" min="0" step="0.01" value="{{ config.reserve_balance }}"></label>
+<label class="field">Daily loss limit (quote)<input name="daily_loss_limit_quote" type="number" min="0.01" step="0.01" value="{{ config.daily_loss_limit_quote }}"></label>
 <label class="field">Max equity drawdown (%)<input name="max_equity_drawdown_pct" type="number" min="0.01" max="100" step="0.1" value="{{ config.max_equity_drawdown_pct }}"></label>
 <label class="field">Minimum net profit (%)<input name="min_net_profit_pct" type="number" min="0" max="100" step="0.01" value="{{ config.min_net_profit_pct }}"></label>
 <label class="field">Fee / side (%)<input name="fee_rate_pct_per_side" type="number" min="0" max="5" step="0.01" value="{{ config.fee_rate_pct_per_side }}"></label>
@@ -89,12 +82,10 @@
 <div class="form-actions"><button class="button primary" type="submit">Save DCA configuration ↗</button><span class="muted">Saving never starts a deal.</span></div>
 </form>
 </section>
-
 <section class="panel" id="deals"><div class="section-heading"><div><p class="eyebrow">DEAL CONTROL</p><h2>Start a DCA deal</h2><p class="muted">Choose a configured pair manually. The bot will never open one by itself.</p></div></div>
-<div class="strategy-list">{% for symbol in config.symbols %}<article class="strategy-row"><div class="coin-icon">◈</div><div class="strategy-name"><b>{{ symbol }}</b><small>Manual entry</small></div><span class="state-chip">READY</span><button class="button secondary compact" type="button" data-start-dca="{{ symbol }}">Start DCA ↗</button></article>{% else %}<div class="empty-state"><b>No pairs configured</b><p>Add at least one USDT pair above.</p></div>{% endfor %}</div>
-<div class="deal-list">{% for deal in deals %}<article class="strategy-row"><div class="coin-icon">◷</div><div class="strategy-name"><b>{{ deal.symbol }}</b><small>{{ deal.status }} · avg {{ deal.average_entry_price }}</small></div><span class="state-chip">{{ deal.safety_orders_filled }}/{{ deal.safety_orders_total }} DCA</span><span class="muted">PnL {{ deal.unrealized_pnl_quote }} USDT</span></article>{% endfor %}</div>
+<div class="strategy-list">{% for symbol in config.symbols %}<article class="strategy-row"><div class="coin-icon">◈</div><div class="strategy-name"><b>{{ symbol }}</b><small>Manual entry</small></div><span class="state-chip">READY</span><button class="button secondary compact" type="button" data-start-dca="{{ symbol }}">Start DCA ↗</button></article>{% else %}<div class="empty-state"><b>No pairs configured</b><p>Add at least one pair above.</p></div>{% endfor %}</div>
+<div class="deal-list">{% for deal in deals %}<article class="strategy-row"><div class="coin-icon">◷</div><div class="strategy-name"><b>{{ deal.symbol }}</b><small>{{ deal.status }} · avg {{ deal.average_entry_price }}</small></div><span class="state-chip">{{ deal.safety_orders_filled }}/{{ deal.safety_orders_total }} DCA</span><span class="muted">PnL {{ deal.unrealized_pnl_quote }}</span></article>{% endfor %}</div>
 </section>
-
 <section class="panel" id="risk"><div class="section-heading"><div><p class="eyebrow">RISK CONTROL</p><h2>Risk status</h2><p class="muted">Capital and drawdown guards remain active even though entry selection is manual.</p></div></div><div id="risk-status" class="empty-state">Loading risk status…</div></section>
 </main></div>
 <script src="/static/app.js"></script>
