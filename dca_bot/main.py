@@ -36,8 +36,6 @@ async def lifespan(_: FastAPI):
     init_db()
     stop_event = asyncio.Event()
     worker_task = None
-    # This worker only manages deals that the user explicitly started.
-    # It never discovers pairs, analyzes signals, or creates entries.
     if settings.trading_mode.lower() == "paper":
         worker_task = asyncio.create_task(
             run_paper_worker(stop_event, settings.paper_poll_interval_seconds),
@@ -53,7 +51,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="DCA Bot",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None,
@@ -89,7 +87,7 @@ def ensure_authenticated(request: Request) -> None:
 
 
 def get_or_create_config(db: Session) -> StrategyRecord:
-    """There is exactly one DCA configuration. No strategy profiles exist."""
+    """There is exactly one dashboard-owned DCA configuration."""
     record = db.query(StrategyRecord).order_by(StrategyRecord.id.asc()).first()
     if record is None:
         config = StrategyConfig()
@@ -220,7 +218,12 @@ def dca_deal_start(request: Request, csrf: str = Form(..., alias="csrf_token"), 
         if reserved_capital_quote(active_deals) + D(str(config.max_capital_per_deal)) > D(str(config.max_total_allocation)):
             raise ValueError("Total allocation cap would be exceeded")
         ticker = BinanceSpotMarketData().ticker(normalized)
-        deal = start_paper_deal(config, normalized, ticker.last)
+        current = ticker.last
+        if config.trigger_price is not None and current > D(str(config.trigger_price)):
+            raise ValueError(f"Trigger Price not reached; current price is {current}")
+        if config.price_range_enabled and not (D(str(config.price_range_min)) <= current <= D(str(config.price_range_max))):
+            raise ValueError("Current market price is outside the configured Price Range")
+        deal = start_paper_deal(config, normalized, current)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
@@ -309,11 +312,14 @@ def save_dca(
     request: Request, csrf: str = Form(..., alias="csrf_token"), symbols: str = Form("BTCUSDT"),
     base_order_quote: float = Form(10), safety_order_quote: float = Form(10), max_safety_orders: int = Form(4),
     take_profit_pct: float = Form(1), take_profit_basis: str = Form("average_entry"), initial_deviation_pct: float = Form(1),
-    deviation_scale: float = Form(1.5), safety_order_volume_scale: float = Form(1.5), dca_mode: str = Form("position_averaging"),
+    deviation_scale: float = Form(1.0), safety_order_volume_scale: float = Form(1.0), dca_mode: str = Form("position_averaging"),
     averaging_method: str = Form("fixed_order_value"), safety_order_base_quantity: float = Form(0.001),
+    trigger_price: float | None = Form(None), price_range_enabled: bool = Form(False),
+    price_range_min: float | None = Form(None), price_range_max: float | None = Form(None), cooldown_seconds: int = Form(0),
     trailing_take_profit_enabled: bool = Form(False), trailing_activation_pct: float = Form(1), trailing_callback_pct: float = Form(0.3),
     stop_loss_enabled: bool = Form(False), stop_loss_pct: float = Form(10), stop_loss_basis: str = Form("base_order"),
-    move_stop_to_breakeven_enabled: bool = Form(False), breakeven_activation_pct: float = Form(1), breakeven_offset_pct: float = Form(0),
+    end_bot_on_stop_loss: bool = Form(False), move_stop_to_breakeven_enabled: bool = Form(False),
+    breakeven_activation_pct: float = Form(1), breakeven_offset_pct: float = Form(0),
     reinvest_profit: bool = Form(False), max_deal_duration_hours: int = Form(0), max_active_deals: int = Form(3),
     max_active_deals_per_symbol: int = Form(1), max_capital_per_deal: float = Form(200), max_total_allocation: float = Form(600),
     reserve_balance: float = Form(20), daily_loss_limit_quote: float = Form(25), max_equity_drawdown_pct: float = Form(5),
@@ -330,9 +336,12 @@ def save_dca(
             take_profit_pct=take_profit_pct, take_profit_basis=take_profit_basis, initial_deviation_pct=initial_deviation_pct,
             deviation_scale=deviation_scale, safety_order_volume_scale=safety_order_volume_scale, dca_mode=dca_mode,
             averaging_method=averaging_method, safety_order_base_quantity=safety_order_base_quantity,
+            trigger_price=trigger_price, price_range_enabled=price_range_enabled,
+            price_range_min=price_range_min, price_range_max=price_range_max, cooldown_seconds=cooldown_seconds,
             trailing_take_profit_enabled=trailing_take_profit_enabled, trailing_activation_pct=trailing_activation_pct,
             trailing_callback_pct=trailing_callback_pct, stop_loss_enabled=stop_loss_enabled, stop_loss_pct=stop_loss_pct,
-            stop_loss_basis=stop_loss_basis, move_stop_to_breakeven_enabled=move_stop_to_breakeven_enabled,
+            stop_loss_basis=stop_loss_basis, end_bot_on_stop_loss=end_bot_on_stop_loss,
+            move_stop_to_breakeven_enabled=move_stop_to_breakeven_enabled,
             breakeven_activation_pct=breakeven_activation_pct, breakeven_offset_pct=breakeven_offset_pct,
             reinvest_profit=reinvest_profit, max_deal_duration_hours=max_deal_duration_hours,
             max_active_deals=max_active_deals, max_active_deals_per_symbol=max_active_deals_per_symbol,
@@ -342,8 +351,10 @@ def save_dca(
         )
         if config.estimated_net_tp_pct() < config.min_net_profit_pct:
             raise ValueError("Net take-profit estimate is below the configured minimum")
-        if config.max_capital_per_deal * config.max_active_deals > config.max_total_allocation:
-            raise ValueError("Per-deal capital multiplied by active deals exceeds total allocation")
+        if config.estimated_max_deal_capital() > config.max_capital_per_deal:
+            raise ValueError("DCA ladder capital exceeds max capital per deal")
+        if config.estimated_max_deal_capital() * config.max_active_deals > config.max_total_allocation:
+            raise ValueError("Estimated DCA capital multiplied by active deals exceeds total allocation")
     except Exception as exc:
         return render_dashboard(request, db, error=str(exc), status_code=422)
 
