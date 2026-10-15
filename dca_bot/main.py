@@ -23,7 +23,7 @@ from .dca_math import build_dca_summary
 from .market_data import BinanceSpotMarketData
 from .paper_engine import deserialize_paper_deal, estimate_unrealized_pnl_quote, serialize_paper_deal, start_paper_deal
 from .worker import run_paper_worker, tick_active_paper_deals
-from .risk import reserved_capital_quote, strategy_risk_status
+from .risk import quote_asset, reserved_capital_by_quote, strategy_risk_status
 from .entry_guard import serialized_entry
 from .binance_account import BinanceAccountData
 
@@ -215,8 +215,11 @@ def dca_deal_start(request: Request, csrf: str = Form(..., alias="csrf_token"), 
             raise ValueError("Maximum active DCA deals reached")
         if sum(1 for deal in active_deals if deal.symbol == normalized) >= config.max_active_deals_per_symbol:
             raise ValueError("This pair already has an active DCA deal")
-        if reserved_capital_quote(active_deals) + D(str(config.max_capital_per_deal)) > D(str(config.max_total_allocation)):
-            raise ValueError("Total allocation cap would be exceeded")
+        quote = quote_asset(normalized)
+        reserved_by_quote = reserved_capital_by_quote(active_deals)
+        reserved_for_quote = reserved_by_quote.get(quote, D("0"))
+        if reserved_for_quote + D(str(config.max_capital_per_deal)) > D(str(config.max_total_allocation)):
+            raise ValueError(f"Total {quote} allocation cap would be exceeded")
         ticker = BinanceSpotMarketData().ticker(normalized)
         current = ticker.last
         if config.trigger_price is not None and current > D(str(config.trigger_price)):
