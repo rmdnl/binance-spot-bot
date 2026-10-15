@@ -7,14 +7,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class StrategyConfig(BaseModel):
     """Single dashboard-owned DCA configuration.
 
-    The class is retained as the internal persistence schema for compatibility;
-    there are no selectable strategy profiles or autonomous pair discovery.
+    The class name is retained as the internal persistence schema for
+    compatibility. It does not represent an autonomous trading strategy:
+    pair selection and all DCA parameters are controlled manually from the
+    dashboard.
     """
     name: str = Field(default='DCA Configuration', min_length=1, max_length=80)
     enabled: bool = False
     symbols: list[str] = Field(default_factory=lambda: ['BTC/USDT'], min_length=1, max_length=30)
     pair_selection_mode: Literal['manual'] = 'manual'
-    quote_asset: str = 'USDT'
+    # Kept for backwards-compatible persisted configuration. The actual quote
+    # asset is derived from each BASE/QUOTE symbol and is never hard-coded.
+    quote_asset: str | None = None
     order_size_mode: Literal['fixed_quote', 'balance_percent'] = 'fixed_quote'
     base_order_quote: float = Field(default=10.0, gt=0, le=1_000_000)
     base_order_balance_pct: float = Field(default=1.0, gt=0, le=100)
@@ -75,20 +79,24 @@ class StrategyConfig(BaseModel):
     @field_validator('symbols')
     @classmethod
     def normalize_symbols(cls, values: list[str]) -> list[str]:
-        normalized = []
+        normalized: list[str] = []
         for value in values:
             symbol = value.strip().upper().replace('-', '/')
             if not symbol or len(symbol) > 30 or any(ch.isspace() for ch in symbol):
                 raise ValueError(f'Invalid trading symbol: {value!r}')
             if '/' not in symbol:
+                # Preserve the legacy compact USDT form for existing configs.
                 if symbol.endswith('USDT') and len(symbol) > 4:
                     symbol = f'{symbol[:-4]}/USDT'
                 else:
-                    raise ValueError('Use BASE/QUOTE format or a supported pair such as BTCUSDT')
+                    raise ValueError('Use BASE/QUOTE format, for example BTC/USDT, ETH/BTC, or SOL/USDC')
+            base, quote = symbol.split('/', 1)
+            if not base or not quote or '/' in quote:
+                raise ValueError(f'Invalid trading symbol: {value!r}')
+            if not base.isalnum() or not quote.isalnum():
+                raise ValueError(f'Invalid trading symbol: {value!r}')
             if symbol in normalized:
                 raise ValueError(f'Duplicate trading symbol: {symbol}')
-            if not symbol.endswith('/USDT'):
-                raise ValueError('Only USDT spot pairs are supported')
             normalized.append(symbol)
         return normalized
 
