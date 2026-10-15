@@ -40,6 +40,16 @@ class PnlRow:
     mark_price: D
 
 
+@dataclass(frozen=True)
+class QuotePnlSummary:
+    """Aggregate PNL only inside one quote-currency bucket."""
+
+    quote: str
+    realized: D
+    unrealized: D
+    total: D
+
+
 class BinanceAccountData:
     """Read-only Binance Spot account data for the authenticated dashboard."""
 
@@ -130,9 +140,10 @@ class BinanceAccountData:
                 if amount <= 0 or cost < 0:
                     continue
                 if trade.get("side") == "buy":
+                    # A base-currency fee reduces the quantity actually held.
                     acquired = amount - fee_amount if fee_currency == base else amount
                     fee_quote = fee_amount if fee_currency == quote else D("0")
-                    qty += acquired
+                    qty += max(D("0"), acquired)
                     cost_basis += cost + fee_quote
                 elif trade.get("side") == "sell":
                     sold = amount
@@ -140,6 +151,8 @@ class BinanceAccountData:
                         basis = cost_basis * min(sold, qty) / qty
                     else:
                         basis = D("0")
+                    # Quote-currency fees reduce realized proceeds. A base fee
+                    # is already represented by the executed base quantity.
                     fee_quote = fee_amount if fee_currency == quote else D("0")
                     realized += cost - fee_quote - basis
                     qty = max(D("0"), qty - sold)
@@ -156,3 +169,26 @@ class BinanceAccountData:
                 mark_price=mark,
             ))
         return result
+
+    @staticmethod
+    def summarize_pnl_by_quote(rows: list[PnlRow]) -> list[QuotePnlSummary]:
+        """Group PNL by quote asset without converting or mixing currencies.
+
+        BTC/USDT contributes to the USDT bucket, ETH/BTC contributes to the BTC
+        bucket, and BTC/USDC contributes to the USDC bucket. There is deliberately
+        no fake cross-currency total because a conversion price is required before
+        two quote currencies can be meaningfully combined.
+        """
+        buckets: dict[str, tuple[D, D]] = {}
+        for row in rows:
+            realized, unrealized = buckets.get(row.quote, (D("0"), D("0")))
+            buckets[row.quote] = (realized + row.realized, unrealized + row.unrealized)
+        return [
+            QuotePnlSummary(
+                quote=quote,
+                realized=values[0],
+                unrealized=values[1],
+                total=values[0] + values[1],
+            )
+            for quote, values in sorted(buckets.items())
+        ]
