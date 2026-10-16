@@ -15,6 +15,29 @@ D = Decimal
 FEE_SCALE = D("0.00000001")
 ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
 
+# Exchange status updates must never move a local order backwards or resurrect
+# a terminal order after restart/reconciliation.
+_ALLOWED_TRANSITIONS = {
+    OrderStatus.NEW.value: {
+        OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value,
+        OrderStatus.FILLED.value, OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value,
+        OrderStatus.REJECTED.value,
+    },
+    OrderStatus.OPEN.value: {
+        OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value,
+        OrderStatus.FILLED.value, OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value,
+    },
+    OrderStatus.PARTIALLY_FILLED.value: {
+        OrderStatus.PARTIALLY_FILLED.value, OrderStatus.FILLED.value,
+        OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value,
+    },
+    OrderStatus.FILLED.value: {OrderStatus.FILLED.value},
+    OrderStatus.CANCELED.value: {OrderStatus.CANCELED.value},
+    OrderStatus.EXPIRED.value: {OrderStatus.EXPIRED.value},
+    OrderStatus.REJECTED.value: {OrderStatus.REJECTED.value},
+    OrderStatus.UNKNOWN.value: {OrderStatus.UNKNOWN.value},
+}
+
 
 @dataclass(frozen=True)
 class SubmitResult:
@@ -51,8 +74,14 @@ def create_intent(db: Session, request: OrderRequest) -> SpotOrder:
 
 
 def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any]) -> None:
+    incoming = _map_status(raw.get("status"))
+    allowed = _ALLOWED_TRANSITIONS.get(order.status, {order.status})
+    if incoming not in allowed:
+        raise ValueError(
+            f"invalid order state transition: {order.status} -> {incoming}"
+        )
     order.exchange_order_id = str(raw.get("id")) if raw.get("id") is not None else order.exchange_order_id
-    order.status = _map_status(raw.get("status"))
+    order.status = incoming
     order.filled_amount = D(str(raw.get("filled") or "0"))
     avg = raw.get("average")
     if avg is not None:
