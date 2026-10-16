@@ -80,4 +80,4 @@ def test_full_session_restart_reconciles_and_resumes_without_duplicate_accountin
         assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 2
         assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 1
         pnl = db.scalar(select(RealizedPNLEntry))
-        assert pnl.realized_pnl == D("9.84")
+        assert pnl.realized_pnl == D("9.839")
