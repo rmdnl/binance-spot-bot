@@ -166,15 +166,27 @@ def _resumable_plan(bot: GridBot, order: SpotOrder, level: GridLevel) -> GridOrd
 
 
 def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SubmitResult]:
-    """Resume only the persisted grid lifecycle without creating a fresh grid."""
+    """Resume the persisted grid lifecycle without rebuilding an existing grid."""
     start_grid(db, bot)
     db.commit()
     results: list[SubmitResult] = []
 
     levels = sorted(bot.levels, key=lambda item: item.level_index)
+    linked_orders = [
+        order_id
+        for level in levels
+        for order_id in (level.buy_order_id, level.sell_order_id)
+        if order_id is not None
+    ]
+
+    # A newly materialized grid can be paused before its first order is placed.
+    # In that one case resume is allowed to seed the initial grid. Once any leg
+    # exists, resume is strictly a persisted-lifecycle repair operation.
+    if not linked_orders:
+        return execute_initial_grid(db, adapter, bot)
 
     # Filled legs advance first so the returned submission order is deterministic
-    # and the opposite leg is restored before canceled legs are reopened.
+    # and opposite legs are restored before canceled legs are reopened.
     for level in levels:
         for side in (OrderSide.BUY, OrderSide.SELL):
             existing = _linked_order(level, side, db)
@@ -190,15 +202,15 @@ def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> li
             if target_order is not None and target_order.status in ACTIVE:
                 continue
             try:
-                results.append(submit_grid_order(db, adapter, bot, plan))
+                result = submit_grid_order(db, adapter, bot, plan)
+                if result.exchange is not None:
+                    results.append(result)
             except ValueError as exc:
                 if "max_open_orders" in str(exc):
                     return results
                 raise
 
     # Then restore only legs that existed before the pause and became terminal.
-    # Resume is not a fresh initial-grid operation: newly discovered levels belong
-    # to the normal grid engine after execution advances, not to pause/resume repair.
     for level in levels:
         for side in (OrderSide.BUY, OrderSide.SELL):
             existing = _linked_order(level, side, db)
@@ -208,7 +220,9 @@ def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> li
             if plan is None:
                 continue
             try:
-                results.append(submit_grid_order(db, adapter, bot, plan))
+                result = submit_grid_order(db, adapter, bot, plan)
+                if result.exchange is not None:
+                    results.append(result)
             except ValueError as exc:
                 if "max_open_orders" in str(exc):
                     return results
