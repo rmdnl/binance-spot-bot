@@ -22,7 +22,7 @@ class InventoryResult:
     realized_pnl: D = ZERO
 
 
-def _decimal(value: D | str | int | float) -> D:
+def _decimal(value: D | str | float) -> D:
     """Normalize DB numeric values before accounting arithmetic.
 
     SQLite may round SQLAlchemy Numeric values through a binary float. Twelve
