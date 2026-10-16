@@ -1,8 +1,11 @@
 from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from .config import get_settings
-from .models import Base
+
+from .config import ROOT, get_settings
 
 settings = get_settings()
 url = settings.database_url
@@ -11,11 +14,23 @@ if url.startswith("sqlite+aiosqlite:///"):
 if url.startswith("sqlite:///") and url != "sqlite:///:memory:":
     raw = url.removeprefix("sqlite:///")
     Path(raw if raw.startswith("/") else Path.cwd() / raw).resolve().parent.mkdir(parents=True, exist_ok=True)
-engine = create_engine(url, connect_args={"check_same_thread": False} if url.startswith("sqlite") else {})
+engine = create_engine(
+    url,
+    connect_args={"check_same_thread": False} if url.startswith("sqlite") else {},
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
-def init_db():
-    Base.metadata.create_all(bind=engine)
+
+def _alembic_config() -> Config:
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    return config
+
+
+def init_db() -> None:
+    command.upgrade(_alembic_config(), "head")
+
 
 def get_db():
     db = SessionLocal()
