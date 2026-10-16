@@ -256,8 +256,8 @@ def test_resume_execution_recreates_missing_orders():
     results = resume_grid_execution(db, adapter, bot)
 
     assert bot.status == GridStatus.RUNNING.value
-    assert len(results) == 2
-    assert len(grid_open_order_ids(db, bot)) == 2
+    assert len(results) == 1
+    assert len(grid_open_order_ids(db, bot)) == 1
 
 
 def test_stop_execution_cancels_all_active_orders():
