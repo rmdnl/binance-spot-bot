@@ -6,7 +6,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import InventoryPosition, SpotFill
+from .models import InventoryApplication, InventoryPosition, SpotFill
 
 D = Decimal
 ZERO = D("0")
@@ -33,7 +33,7 @@ def _assets(symbol: str) -> tuple[str, str]:
 
 def _position(db: Session, fill: SpotFill) -> InventoryPosition:
     base, quote = _assets(fill.symbol)
-    environment = db.get(SpotFill, fill.id).order.environment
+    environment = fill.order.environment
     position = db.scalar(
         select(InventoryPosition).where(
             InventoryPosition.environment == environment,
@@ -57,42 +57,56 @@ def _position(db: Session, fill: SpotFill) -> InventoryPosition:
 def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
     """Apply one exchange fill to persistent inventory exactly once.
 
-    The caller owns the transaction. If this function raises, the caller must
-    roll back so neither the inventory row nor the fill application is partial.
+    The caller owns the transaction. All inventory changes and the application
+    marker are committed or rolled back together.
     """
-    if fill.amount <= 0 or fill.quote_amount < 0:
-        raise ValueError("fill amount must be positive and quote amount non-negative")
-    if fill.fee < 0:
-        raise ValueError("fill fee cannot be negative")
-
-    # The fill itself is the idempotency key. A committed fill is never applied twice.
-    if db.info.get("inventory_applied", set()) and fill.id in db.info["inventory_applied"]:
-        position = _position(db, fill)
-        return InventoryResult(fill.id, False, D(str(position.base_quantity)), D(str(position.quote_cost)))
-
-    position = _position(db, fill)
     amount = D(str(fill.amount))
     quote_amount = D(str(fill.quote_amount))
     fee = D(str(fill.fee))
+    if amount <= ZERO or quote_amount < ZERO:
+        raise ValueError("fill amount must be positive and quote amount non-negative")
+    if fee < ZERO:
+        raise ValueError("fill fee cannot be negative")
+
+    already_applied = db.scalar(
+        select(InventoryApplication).where(InventoryApplication.fill_id == fill.id)
+    )
+    position = _position(db, fill)
+    if already_applied is not None:
+        return InventoryResult(
+            fill.id,
+            False,
+            D(str(position.base_quantity)),
+            D(str(position.quote_cost)),
+        )
+
+    # Insert the durable idempotency marker before mutating inventory. If any
+    # later validation fails, the caller's transaction rollback removes it too.
+    db.add(InventoryApplication(fill_id=fill.id))
+    db.flush()
+
     _, quote = _assets(fill.symbol)
     fee_currency = (fill.fee_currency or "").upper()
+    base_asset = position.base_asset.upper()
 
     if fill.side.lower() == "buy":
-        base_received = amount - fee if fee_currency == position.base_asset.upper() else amount
-        if base_received < 0:
+        base_received = amount - fee if fee_currency == base_asset else amount
+        if base_received < ZERO:
             raise ValueError("base-asset fee exceeds bought amount")
         cost = quote_amount + fee if fee_currency == quote else quote_amount
         position.base_quantity = D(str(position.base_quantity)) + base_received
         position.quote_cost = D(str(position.quote_cost)) + cost
         realized = ZERO
     elif fill.side.lower() == "sell":
-        base_sold = amount + fee if fee_currency == position.base_asset.upper() else amount
+        base_sold = amount + fee if fee_currency == base_asset else amount
         current_qty = D(str(position.base_quantity))
         current_cost = D(str(position.quote_cost))
         if base_sold > current_qty:
             raise ValueError("sell fill exceeds available inventory")
         released_cost = ZERO if current_qty == ZERO else current_cost * base_sold / current_qty
         proceeds = quote_amount - fee if fee_currency == quote else quote_amount
+        if proceeds < ZERO:
+            raise ValueError("quote-asset fee exceeds sell proceeds")
         position.base_quantity = current_qty - base_sold
         position.quote_cost = current_cost - released_cost
         realized = proceeds - released_cost
@@ -104,7 +118,6 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
 
     position.updated_at = fill.timestamp
     db.flush()
-    db.info.setdefault("inventory_applied", set()).add(fill.id)
     return InventoryResult(
         fill.id,
         True,
