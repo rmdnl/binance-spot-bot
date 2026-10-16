@@ -7,8 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .exchange import BinanceSpot
-from .grid_service import grid_order_type, materialize_levels, order_side_for_level
-from .models import GridBot, GridLevel, OrderRequest, OrderSide, OrderStatus, SpotOrder
+from .grid_service import grid_order_type, order_side_for_level
+from .models import Environment, GridBot, GridLevel, OrderRequest, OrderSide, OrderStatus, SpotOrder
 from .order_service import SubmitResult, create_intent, recover_or_submit, reconcile_order, record_fills
 
 D = Decimal
@@ -32,9 +32,7 @@ def quote_per_grid(bot: GridBot) -> D:
 def plan_order(bot: GridBot, level: GridLevel, side: OrderSide) -> GridOrderPlan:
     if level.price <= 0:
         raise ValueError("grid level price must be positive")
-    quote = quote_per_grid(bot)
-    amount = quote / level.price
-    return GridOrderPlan(level.level_index, side, level.price, amount)
+    return GridOrderPlan(level.level_index, side, level.price, quote_per_grid(bot) / level.price)
 
 
 def initial_order_plans(bot: GridBot, current_price: D) -> list[GridOrderPlan]:
@@ -42,9 +40,9 @@ def initial_order_plans(bot: GridBot, current_price: D) -> list[GridOrderPlan]:
         raise ValueError("current price must be positive")
     levels = sorted(bot.levels, key=lambda item: item.level_index)
     return [
-        plan_order(bot, level, order_side_for_level(current_price, level.price))
+        plan_order(bot, level, OrderSide.BUY)
         for level in levels
-        if level.price != current_price
+        if level.price < current_price
     ]
 
 
@@ -68,15 +66,17 @@ def submit_grid_order(
     if level is None:
         raise ValueError("grid level not found")
     existing = _linked_order(level, plan.side, db)
+    if existing is not None and existing.status in ACTIVE:
+        return SubmitResult(existing, None)
     if existing is not None:
-        if existing.status in ACTIVE:
-            return SubmitResult(existing, None)
-        if existing.status == OrderStatus.FILLED.value:
-            raise ValueError("grid level already has a filled order")
-        raise ValueError(f"grid level has terminal order {existing.status}")
+        if plan.side == OrderSide.BUY:
+            level.buy_order_id = None
+        else:
+            level.sell_order_id = None
+        db.flush()
 
     request = OrderRequest(
-        environment=__import__("spot_bot.models", fromlist=["Environment"]).Environment(bot.environment),
+        environment=Environment(bot.environment),
         symbol=bot.symbol,
         side=plan.side,
         order_type=grid_order_type(),
@@ -121,8 +121,7 @@ def opposite_plan(bot: GridBot, filled_order: SpotOrder) -> GridOrderPlan | None
     target_index = linked.level_index + 1 if opposite == OrderSide.SELL else linked.level_index - 1
     if target_index < 0 or target_index >= bot.grids:
         return None
-    target = levels[target_index]
-    return plan_order(bot, target, opposite)
+    return plan_order(bot, levels[target_index], opposite)
 
 
 def advance_after_fill(
