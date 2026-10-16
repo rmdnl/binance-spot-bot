@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dca-bot"
+name = "binance-spot-terminal"
 version = "0.1.0"
-description = "Self-hosted Binance Spot DCA trading dashboard"
+description = "Self-hosted Binance Spot Trading Terminal with manual trading and grid execution"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

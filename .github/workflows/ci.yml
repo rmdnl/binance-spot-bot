@@ -19,3 +19,4 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: python -m compileall -q dca_bot
       - run: pytest
+      - run: ruff check .
