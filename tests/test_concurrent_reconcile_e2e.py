@@ -4,7 +4,6 @@ from threading import Barrier
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from spot_bot.inventory_service import apply_fill
 from spot_bot.models import Base, Environment, InventoryApplication, InventoryPosition, RealizedPNLEntry, SpotFill, SpotOrder
@@ -25,8 +24,11 @@ class ConcurrentAdapter:
         return self.trades
 
 
-def make_db():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+def make_db(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'concurrent-reconcile.db'}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
     Base.metadata.create_all(engine)
     return engine
 
@@ -40,8 +42,8 @@ def seed(engine):
         return order.id
 
 
-def test_concurrent_reconcile_same_order_does_not_duplicate_fill_or_accounting():
-    engine = make_db()
+def test_concurrent_reconcile_same_order_does_not_duplicate_fill_or_accounting(tmp_path):
+    engine = make_db(tmp_path)
     order_id = seed(engine)
     barrier = Barrier(2)
 
