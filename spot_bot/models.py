@@ -117,6 +117,21 @@ class SpotFill(Base):
     order: Mapped[SpotOrder] = relationship(back_populates="fills")
 
 
+class InventoryPosition(Base):
+    __tablename__ = "inventory_positions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(10), index=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    base_asset: Mapped[str] = mapped_column(String(20))
+    quote_asset: Mapped[str] = mapped_column(String(20))
+    base_quantity: Mapped[D] = mapped_column(Numeric(38, 18), default=D("0"))
+    quote_cost: Mapped[D] = mapped_column(Numeric(38, 18), default=D("0"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+    __table_args__ = (
+        UniqueConstraint("environment", "symbol", name="uq_inventory_environment_symbol"),
+    )
+
+
 class GridBot(Base):
     __tablename__ = "grid_bots"
     id: Mapped[int] = mapped_column(primary_key=True)
