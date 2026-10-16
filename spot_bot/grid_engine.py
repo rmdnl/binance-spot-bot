@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .exchange import BinanceSpot
-from .grid_service import grid_order_type
+from .grid_service import grid_open_order_ids, grid_order_type
 from .models import Environment, GridBot, GridLevel, OrderRequest, OrderSide, OrderStatus, SpotOrder
 from .order_service import SubmitResult, create_intent, recover_or_submit, reconcile_order, record_fills
 
