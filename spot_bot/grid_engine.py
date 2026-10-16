@@ -7,9 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .exchange import BinanceSpot
-from .grid_service import grid_open_order_ids, grid_order_type
+from .grid_service import grid_open_order_ids, grid_order_type, pause_grid, start_grid, stop_grid
 from .models import Environment, GridBot, GridLevel, OrderRequest, OrderSide, OrderStatus, SpotOrder
-from .order_service import SubmitResult, create_intent, recover_or_submit, reconcile_order, record_fills
+from .order_service import SubmitResult, cancel_order, create_intent, record_fills, recover_or_submit, reconcile_order
 
 D = Decimal
 ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
@@ -120,6 +120,45 @@ def reconcile_grid_order(db: Session, adapter: BinanceSpot, bot: GridBot, order_
     return result
 
 
+def cancel_grid_orders(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SpotOrder]:
+    """Cancel every locally-active order linked to a grid and reconcile the result."""
+    orders: list[SpotOrder] = []
+    for order_id in grid_open_order_ids(db, bot):
+        order = db.get(SpotOrder, order_id)
+        if order is None or order.status not in ACTIVE:
+            continue
+        try:
+            cancel_order(db, adapter, order)
+            record_fills(db, adapter, order)
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        orders.append(order)
+    return orders
+
+
+def pause_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SpotOrder]:
+    """Pause first, commit the state boundary, then cancel active exchange orders."""
+    pause_grid(db, bot)
+    db.commit()
+    return cancel_grid_orders(db, adapter, bot)
+
+
+def stop_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SpotOrder]:
+    """Stop first, commit the terminal state boundary, then cancel active exchange orders."""
+    stop_grid(db, bot)
+    db.commit()
+    return cancel_grid_orders(db, adapter, bot)
+
+
+def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SubmitResult]:
+    """Resume a paused grid and recreate only missing active levels."""
+    start_grid(db, bot)
+    db.commit()
+    return execute_initial_grid(db, adapter, bot)
+
+
 def opposite_plan(bot: GridBot, filled_order: SpotOrder) -> GridOrderPlan | None:
     levels = sorted(bot.levels, key=lambda item: item.level_index)
     linked = next((level for level in levels if level.buy_order_id == filled_order.id or level.sell_order_id == filled_order.id), None)
@@ -163,7 +202,7 @@ def advance_after_fill(
     order_id: int,
 ) -> SubmitResult | None:
     order = reconcile_grid_order(db, adapter, bot, order_id)
-    if order.status != OrderStatus.FILLED.value:
+    if order.status != OrderStatus.FILLED.value or bot.status != "running":
         return None
     plan = opposite_plan(bot, order)
     if plan is None:
