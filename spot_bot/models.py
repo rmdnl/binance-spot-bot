@@ -2,13 +2,32 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from enum import StrEnum
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 D = Decimal
+ACCOUNTING_QUANTUM = D("0.000000000001")
+
+
+class AccountingNumeric(TypeDecorator[D]):
+    """Decimal persistence type with deterministic accounting precision."""
+
+    impl = Numeric(38, 18)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return D(str(value)).quantize(ACCOUNTING_QUANTUM, rounding=ROUND_HALF_UP)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        return D(str(value)).quantize(ACCOUNTING_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 class Base(DeclarativeBase):
@@ -127,8 +146,8 @@ class InventoryPosition(Base):
     symbol: Mapped[str] = mapped_column(String(40), index=True)
     base_asset: Mapped[str] = mapped_column(String(20))
     quote_asset: Mapped[str] = mapped_column(String(20))
-    base_quantity: Mapped[D] = mapped_column(Numeric(38, 18), default=D("0"))
-    quote_cost: Mapped[D] = mapped_column(Numeric(38, 18), default=D("0"))
+    base_quantity: Mapped[D] = mapped_column(AccountingNumeric(), default=D("0"))
+    quote_cost: Mapped[D] = mapped_column(AccountingNumeric(), default=D("0"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
     __table_args__ = (
         UniqueConstraint("environment", "symbol", name="uq_inventory_environment_symbol"),
