@@ -13,7 +13,6 @@ from .order_service import SubmitResult, cancel_order, create_intent, record_fil
 
 D = Decimal
 ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
-TERMINAL_FILLED = {OrderStatus.FILLED.value}
 RESUMABLE = {OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value, OrderStatus.REJECTED.value}
 
 
@@ -57,20 +56,10 @@ def _active_grid_order_count(db: Session, bot: GridBot) -> int:
     return len(grid_open_order_ids(db, bot))
 
 
-def submit_grid_order(
-    db: Session,
-    adapter: BinanceSpot,
-    bot: GridBot,
-    plan: GridOrderPlan,
-) -> SubmitResult:
+def submit_grid_order(db: Session, adapter: BinanceSpot, bot: GridBot, plan: GridOrderPlan) -> SubmitResult:
     if bot.status != "running":
         raise ValueError(f"grid {bot.id} is not running")
-    level = db.scalar(
-        select(GridLevel).where(
-            GridLevel.bot_id == bot.id,
-            GridLevel.level_index == plan.level_index,
-        )
-    )
+    level = db.scalar(select(GridLevel).where(GridLevel.bot_id == bot.id, GridLevel.level_index == plan.level_index))
     if level is None:
         raise ValueError("grid level not found")
     existing = _linked_order(level, plan.side, db)
@@ -84,15 +73,9 @@ def submit_grid_order(
         else:
             level.sell_order_id = None
         db.flush()
-
     request = OrderRequest(
-        environment=Environment(bot.environment),
-        symbol=bot.symbol,
-        side=plan.side,
-        order_type=grid_order_type(),
-        amount=plan.amount,
-        price=plan.price,
-        post_only=True,
+        environment=Environment(bot.environment), symbol=bot.symbol, side=plan.side,
+        order_type=grid_order_type(), amount=plan.amount, price=plan.price, post_only=True,
     )
     order = create_intent(db, request)
     if plan.side == OrderSide.BUY:
@@ -100,7 +83,6 @@ def submit_grid_order(
     else:
         level.sell_order_id = order.id
     db.commit()
-
     try:
         result = recover_or_submit(db, adapter, order, post_only=True)
         db.commit()
@@ -123,7 +105,6 @@ def reconcile_grid_order(db: Session, adapter: BinanceSpot, bot: GridBot, order_
 
 
 def cancel_grid_orders(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SpotOrder]:
-    """Cancel every locally-active order linked to a grid and reconcile the result."""
     orders: list[SpotOrder] = []
     for order_id in grid_open_order_ids(db, bot):
         order = db.get(SpotOrder, order_id)
@@ -141,52 +122,58 @@ def cancel_grid_orders(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[
 
 
 def pause_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SpotOrder]:
-    """Pause first, commit the state boundary, then cancel active exchange orders."""
     pause_grid(db, bot)
     db.commit()
     return cancel_grid_orders(db, adapter, bot)
 
 
 def stop_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SpotOrder]:
-    """Stop first, commit the terminal state boundary, then cancel active exchange orders."""
     stop_grid(db, bot)
     db.commit()
     return cancel_grid_orders(db, adapter, bot)
 
 
 def _resumable_plan(bot: GridBot, order: SpotOrder, level: GridLevel) -> GridOrderPlan | None:
-    """Reopen only the unfilled remainder of a canceled/expired/rejected leg."""
     if order.status not in RESUMABLE:
         return None
-    filled = order.filled_amount or D("0")
+    filled = max(D("0"), order.filled_amount or D("0"))
     remaining = order.amount - filled
     if remaining <= 0:
         return None
     return plan_order(bot, level, OrderSide(order.side), remaining)
 
 
+def _resume_terminal_orders(db: Session, adapter: BinanceSpot, bot: GridBot, levels: list[GridLevel]) -> list[SubmitResult]:
+    """Reopen persisted terminal legs, including partially filled cancellations."""
+    results: list[SubmitResult] = []
+    for level in levels:
+        for side in (OrderSide.BUY, OrderSide.SELL):
+            existing = _linked_order(level, side, db)
+            if existing is None or existing.status not in RESUMABLE:
+                continue
+            plan = _resumable_plan(bot, existing, level)
+            if plan is None:
+                continue
+            try:
+                result = submit_grid_order(db, adapter, bot, plan)
+                if result.exchange is not None:
+                    results.append(result)
+            except ValueError as exc:
+                if "max_open_orders" in str(exc):
+                    return results
+                raise
+    return results
+
+
 def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SubmitResult]:
     """Resume the persisted grid lifecycle without rebuilding an existing grid."""
-    start_grid(db, bot)
+    levels = sorted(start_grid(db, bot), key=lambda item: item.level_index)
     db.commit()
     results: list[SubmitResult] = []
-
-    levels = sorted(bot.levels, key=lambda item: item.level_index)
-    linked_orders = [
-        order_id
-        for level in levels
-        for order_id in (level.buy_order_id, level.sell_order_id)
-        if order_id is not None
-    ]
-
-    # A newly materialized grid can be paused before its first order is placed.
-    # In that one case resume is allowed to seed the initial grid. Once any leg
-    # exists, resume is strictly a persisted-lifecycle repair operation.
+    linked_orders = [order_id for level in levels for order_id in (level.buy_order_id, level.sell_order_id) if order_id is not None]
     if not linked_orders:
         return execute_initial_grid(db, adapter, bot)
 
-    # Filled legs advance first so the returned submission order is deterministic
-    # and opposite legs are restored before canceled legs are reopened.
     for level in levels:
         for side in (OrderSide.BUY, OrderSide.SELL):
             existing = _linked_order(level, side, db)
@@ -210,24 +197,7 @@ def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> li
                     return results
                 raise
 
-    # Then restore only legs that existed before the pause and became terminal.
-    for level in levels:
-        for side in (OrderSide.BUY, OrderSide.SELL):
-            existing = _linked_order(level, side, db)
-            if existing is None or existing.status not in RESUMABLE:
-                continue
-            plan = _resumable_plan(bot, existing, level)
-            if plan is None:
-                continue
-            try:
-                result = submit_grid_order(db, adapter, bot, plan)
-                if result.exchange is not None:
-                    results.append(result)
-            except ValueError as exc:
-                if "max_open_orders" in str(exc):
-                    return results
-                raise
-
+    results.extend(_resume_terminal_orders(db, adapter, bot, levels))
     return results
 
 
@@ -260,12 +230,7 @@ def execute_initial_grid(db: Session, adapter: BinanceSpot, bot: GridBot) -> lis
         raise ValueError("exchange ticker has no usable price")
     results: list[SubmitResult] = []
     for plan in initial_order_plans(bot, current):
-        level = db.scalar(
-            select(GridLevel).where(
-                GridLevel.bot_id == bot.id,
-                GridLevel.level_index == plan.level_index,
-            )
-        )
+        level = db.scalar(select(GridLevel).where(GridLevel.bot_id == bot.id, GridLevel.level_index == plan.level_index))
         if level is None:
             continue
         existing = _linked_order(level, plan.side, db)
@@ -280,12 +245,7 @@ def execute_initial_grid(db: Session, adapter: BinanceSpot, bot: GridBot) -> lis
     return results
 
 
-def advance_after_fill(
-    db: Session,
-    adapter: BinanceSpot,
-    bot: GridBot,
-    order_id: int,
-) -> SubmitResult | None:
+def advance_after_fill(db: Session, adapter: BinanceSpot, bot: GridBot, order_id: int) -> SubmitResult | None:
     order = reconcile_grid_order(db, adapter, bot, order_id)
     if order.status != OrderStatus.FILLED.value or bot.status != "running":
         return None
@@ -295,10 +255,5 @@ def advance_after_fill(
     return submit_grid_order(db, adapter, bot, plan)
 
 
-def execute_grid_order(
-    db: Session,
-    adapter: BinanceSpot,
-    bot: GridBot,
-    order_id: int,
-) -> SubmitResult | None:
+def execute_grid_order(db: Session, adapter: BinanceSpot, bot: GridBot, order_id: int) -> SubmitResult | None:
     return advance_after_fill(db, adapter, bot, order_id)
