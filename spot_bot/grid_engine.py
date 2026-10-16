@@ -65,14 +65,19 @@ def submit_grid_order(db: Session, adapter: BinanceSpot, bot: GridBot, plan: Gri
     existing = _linked_order(level, plan.side, db)
     if existing is not None and existing.status in ACTIVE:
         return SubmitResult(existing, None)
-    if _active_grid_order_count(db, bot) >= bot.max_open_orders:
-        raise ValueError("grid max_open_orders limit reached")
+
+    # A terminal leg no longer consumes an open-order slot. Detach it before
+    # enforcing capacity so resume can replace a canceled/expired/rejected leg.
     if existing is not None:
         if plan.side == OrderSide.BUY:
             level.buy_order_id = None
         else:
             level.sell_order_id = None
         db.flush()
+
+    if _active_grid_order_count(db, bot) >= bot.max_open_orders:
+        raise ValueError("grid max_open_orders limit reached")
+
     request = OrderRequest(
         environment=Environment(bot.environment), symbol=bot.symbol, side=plan.side,
         order_type=grid_order_type(), amount=plan.amount, price=plan.price, post_only=True,
@@ -144,7 +149,6 @@ def _resumable_plan(bot: GridBot, order: SpotOrder, level: GridLevel) -> GridOrd
 
 
 def _resume_terminal_orders(db: Session, adapter: BinanceSpot, bot: GridBot, levels: list[GridLevel]) -> list[SubmitResult]:
-    """Reopen persisted terminal legs, including partially filled cancellations."""
     results: list[SubmitResult] = []
     for level in levels:
         for side in (OrderSide.BUY, OrderSide.SELL):
@@ -166,7 +170,6 @@ def _resume_terminal_orders(db: Session, adapter: BinanceSpot, bot: GridBot, lev
 
 
 def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SubmitResult]:
-    """Resume the persisted grid lifecycle without rebuilding an existing grid."""
     levels = sorted(start_grid(db, bot), key=lambda item: item.level_index)
     db.commit()
     results: list[SubmitResult] = []
