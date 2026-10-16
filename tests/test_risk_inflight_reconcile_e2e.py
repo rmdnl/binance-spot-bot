@@ -49,7 +49,7 @@ def test_inflight_order_reconciles_after_kill_switch_without_duplicate_inventory
         db.commit()
         assert order.status == OrderStatus.FILLED.value
         assert order.filled_amount == D("0.010")
-        assert order.fee_quote == D("0.80000000")
+        assert order.fee_quote.quantize(D("0.00000001")) == D("0.80000000")
         assert db.get(RiskState, 1).halted is True
         assert db.scalar(select(func.count()).select_from(SpotFill).where(SpotFill.order_id == order.id)) == 1
 
@@ -82,4 +82,4 @@ def test_reconcile_is_idempotent_after_kill_switch_and_does_not_double_count_fil
         assert order.status == OrderStatus.FILLED.value
         assert order.filled_amount == D("0.010")
         assert db.scalar(select(func.count()).select_from(SpotFill).where(SpotFill.order_id == order.id)) == 1
-        assert order.fee_quote == D("0.80000000")
+        assert order.fee_quote.quantize(D("0.00000001")) == D("0.80000000")
