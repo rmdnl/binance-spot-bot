@@ -1,0 +1,24 @@
+# Binance Spot Bot systemd service
+[Unit]
+Description=Binance Spot Bot dashboard and Spot trading service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=binance-spot-bot
+Group=binance-spot-bot
+WorkingDirectory=/opt/binance-spot-bot
+EnvironmentFile=/opt/binance-spot-bot/.env
+ExecStart=/opt/binance-spot-bot/.venv/bin/uvicorn spot_bot.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/binance-spot-bot/data /opt/binance-spot-bot/logs
+
+[Install]
+WantedBy=multi-user.target
