@@ -8,11 +8,13 @@ from spot_bot.grid_engine import (
     advance_after_fill,
     initial_order_plans,
     pause_grid_execution,
+    reconcile_grid_order,
     resume_grid_execution,
     stop_grid_execution,
     submit_grid_order,
 )
 from spot_bot.grid_service import pause_grid, start_grid
+from spot_bot.inventory_service import apply_fill
 from spot_bot.models import (
     Base,
     Environment,
@@ -22,6 +24,7 @@ from spot_bot.models import (
     OrderSide,
     OrderStatus,
     RealizedPNLEntry,
+    SpotFill,
 )
 
 
@@ -277,3 +280,42 @@ def test_cancel_race_partial_fill_reopens_only_remainder():
     assert resumed[0].order.side == OrderSide.BUY.value
     assert resumed[0].order.amount == order.amount - order.filled_amount
     assert resumed[0].exchange is not None
+
+
+def test_reconcile_twice_does_not_duplicate_fill_or_inventory_pnl():
+    db = session()
+    bot = make_bot(db)
+    start_test_grid(db, bot)
+    adapter = FakeAdapter()
+    result = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[0])
+    order = result.order
+    raw = adapter.orders[order.exchange_order_id]
+    raw.update(status="closed", filled=str(order.amount), average=str(order.price))
+    adapter.trades = [{
+        "id": "trade-reconcile-1",
+        "order": order.exchange_order_id,
+        "amount": str(order.amount),
+        "price": str(order.price),
+        "cost": str(order.amount * order.price),
+        "fee": {"cost": "0", "currency": "USDT"},
+    }]
+
+    first = reconcile_grid_order(db, adapter, bot, order.id)
+    fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
+    assert first.status == OrderStatus.FILLED.value
+    assert len(fills) == 1
+    applied_first = apply_fill(db, fills[0])
+    db.commit()
+
+    second = reconcile_grid_order(db, adapter, bot, order.id)
+    fills_after = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
+    applied_second = apply_fill(db, fills_after[0])
+    db.commit()
+
+    assert second.status == OrderStatus.FILLED.value
+    assert len(fills_after) == 1
+    assert applied_first.applied is True
+    assert applied_second.applied is False
+    assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 1
+    assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0
+    assert db.scalar(select(func.count()).select_from(SpotFill).where(SpotFill.order_id == order.id)) == 1
