@@ -9,6 +9,7 @@ from spot_bot.grid_engine import (
     opposite_plan,
     submit_grid_order,
 )
+from spot_bot.grid_service import start_grid
 from spot_bot.models import Base, Environment, GridBot, GridLevel, OrderSide, OrderStatus
 
 
@@ -69,6 +70,11 @@ def make_bot(db):
     return bot
 
 
+def start_test_grid(db, bot):
+    start_grid(db, bot)
+    db.commit()
+
+
 def test_initial_plans_only_use_buy_levels_below_market():
     db = session()
     bot = make_bot(db)
@@ -81,6 +87,7 @@ def test_initial_plans_only_use_buy_levels_below_market():
 def test_submit_grid_order_commits_intent_before_exchange_submission():
     db = session()
     bot = make_bot(db)
+    start_test_grid(db, bot)
     adapter = FakeAdapter()
     plan = initial_order_plans(bot, D("85000"))[0]
 
@@ -98,6 +105,7 @@ def test_submit_grid_order_commits_intent_before_exchange_submission():
 def test_filled_buy_advances_to_next_sell_level():
     db = session()
     bot = make_bot(db)
+    start_test_grid(db, bot)
     adapter = FakeAdapter()
     first = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[0])
     first_order = first.order
@@ -120,6 +128,7 @@ def test_filled_buy_advances_to_next_sell_level():
 def test_terminal_order_slot_can_be_reused():
     db = session()
     bot = make_bot(db)
+    start_test_grid(db, bot)
     adapter = FakeAdapter()
     plan = initial_order_plans(bot, D("85000"))[0]
     first = submit_grid_order(db, adapter, bot, plan)
