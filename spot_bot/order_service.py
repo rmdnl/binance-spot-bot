@@ -96,6 +96,7 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
         raise
     if existing:
         _apply_exchange_state(order, existing)
+        record_fills(db, adapter, order)
         db.flush()
         return SubmitResult(order, existing)
     return submit_order(db, adapter, order, post_only)
@@ -115,6 +116,7 @@ def reconcile_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> Spot
         return order
     raw = adapter.fetch_order(order.exchange_order_id, order.symbol) if order.exchange_order_id else adapter.fetch_order_by_client_id(order.symbol, order.client_order_id)
     _apply_exchange_state(order, raw)
+    record_fills(db, adapter, order)
     db.flush()
     return order
 
@@ -131,6 +133,7 @@ def cancel_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrd
         # exchange order and let its terminal status/fill quantity win.
         raw = adapter.fetch_order(order.exchange_order_id, order.symbol)
     _apply_exchange_state(order, raw)
+    record_fills(db, adapter, order)
     if order.status not in {OrderStatus.CANCELED.value, OrderStatus.FILLED.value, OrderStatus.EXPIRED.value}:
         order.status = OrderStatus.CANCELED.value
     db.flush()
@@ -147,7 +150,7 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
         if str(trade.get("order")) != str(order.exchange_order_id):
             continue
         trade_id = str(trade.get("id")) if trade.get("id") is not None else None
-        if trade_id and trade_id in existing:
+        if not trade_id or trade_id in existing:
             continue
         amount, price = D(str(trade.get("amount") or "0")), D(str(trade.get("price") or "0"))
         if amount <= 0 or price <= 0:
@@ -158,8 +161,7 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
             quote_amount=D(str(trade.get("cost") or amount * price)), fee=D(str(fee.get("cost") or "0")),
             fee_currency=str(fee.get("currency") or ""), exchange_trade_id=trade_id,
         ))
-        if trade_id:
-            existing.add(trade_id)
+        existing.add(trade_id)
         count += 1
     db.flush()
     return count
