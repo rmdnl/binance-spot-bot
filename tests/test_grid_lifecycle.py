@@ -196,6 +196,14 @@ class CancelRaceAdapter(FakeGridAdapter):
         raise ccxt.InvalidOrder("order already filled")
 
 
+class PartialCancelRaceAdapter(FakeGridAdapter):
+    def cancel_order(self, exchange_order_id, symbol):
+        self.orders[exchange_order_id]["status"] = "canceled"
+        self.orders[exchange_order_id]["filled"] = "0.001"
+        self.orders[exchange_order_id]["average"] = "80000"
+        raise ccxt.InvalidOrder("cancel raced with partial fill")
+
+
 def test_execute_initial_grid_respects_max_open_orders():
     db = db_session()
     bot = GridBot(
@@ -276,6 +284,29 @@ def test_pause_execution_preserves_fill_from_cancel_race():
     assert grid_open_order_ids(db, bot) == []
 
 
+def test_pause_execution_preserves_partial_fill_from_cancel_race():
+    db = db_session()
+    bot = GridBot(
+        environment="testnet", symbol="BTC/USDT", grid_type="arithmetic",
+        lower_price=D("80000"), upper_price=D("90000"), grids=3,
+        capital_quote=D("500"), max_open_orders=3,
+    )
+    db.add(bot)
+    db.flush()
+    start_grid(db, bot)
+    db.commit()
+    adapter = PartialCancelRaceAdapter()
+    submit_grid_order(db, adapter, bot, GridOrderPlan(0, OrderSide.BUY, D("80000"), D("0.002")))
+
+    canceled = pause_grid_execution(db, adapter, bot)
+
+    assert len(canceled) == 1
+    order = canceled[0]
+    assert order.status == "canceled"
+    assert order.filled_amount == D("0.001")
+    assert grid_open_order_ids(db, bot) == []
+
+
 def test_resume_execution_recreates_missing_orders():
     db = db_session()
     bot = GridBot(
@@ -294,6 +325,48 @@ def test_resume_execution_recreates_missing_orders():
     assert bot.status == GridStatus.RUNNING.value
     assert len(results) == 1
     assert len(grid_open_order_ids(db, bot)) == 1
+
+
+def test_resume_does_not_recreate_filled_leg_and_reopens_its_opposite():
+    db = db_session()
+    bot = GridBot(
+        environment="testnet", symbol="BTC/USDT", grid_type="arithmetic",
+        lower_price=D("80000"), upper_price=D("90000"), grids=3,
+        capital_quote=D("500"), max_open_orders=3, status=GridStatus.PAUSED.value,
+    )
+    db.add(bot)
+    db.flush()
+    levels = materialize_levels(db, bot)
+
+    filled_buy = SpotOrder(
+        environment="testnet", symbol="BTC/USDT", side="buy", order_type="limit_maker",
+        status="filled", amount=D("0.002"), price=D("80000"), filled_amount=D("0.002"),
+        average_price=D("80000"), client_order_id="spot-resume-filled-01",
+    )
+    canceled_buy = SpotOrder(
+        environment="testnet", symbol="BTC/USDT", side="buy", order_type="limit_maker",
+        status="canceled", amount=D("0.001"), price=D("85000"), client_order_id="spot-resume-cancel-01",
+    )
+    db.add_all([filled_buy, canceled_buy])
+    db.flush()
+    levels[0].buy_order_id = filled_buy.id
+    levels[1].buy_order_id = canceled_buy.id
+    db.commit()
+
+    adapter = FakeGridAdapter()
+    results = resume_grid_execution(db, adapter, bot)
+
+    assert bot.status == GridStatus.RUNNING.value
+    assert len(results) == 2
+    assert [request.side for request in adapter.created] == [OrderSide.SELL, OrderSide.BUY]
+    assert adapter.created[0].price == D("85000")
+    assert adapter.created[0].amount == D("0.002")
+    assert levels[0].buy_order_id == filled_buy.id
+    assert db.get(SpotOrder, levels[0].buy_order_id).status == "filled"
+    assert grid_open_order_ids(db, bot) == [
+        db.get(SpotOrder, levels[1].sell_order_id).id,
+        db.get(SpotOrder, levels[1].buy_order_id).id,
+    ]
 
 
 def test_stop_execution_cancels_all_active_orders():
