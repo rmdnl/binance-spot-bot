@@ -14,6 +14,7 @@ from .order_service import SubmitResult, cancel_order, create_intent, record_fil
 D = Decimal
 ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
 TERMINAL_FILLED = {OrderStatus.FILLED.value}
+RESUMABLE = {OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value, OrderStatus.REJECTED.value}
 
 
 @dataclass(frozen=True)
@@ -153,13 +154,45 @@ def stop_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list
     return cancel_grid_orders(db, adapter, bot)
 
 
+def _resumable_plan(bot: GridBot, order: SpotOrder, level: GridLevel) -> GridOrderPlan | None:
+    """Reopen only the unfilled remainder of a canceled/expired/rejected leg."""
+    if order.status not in RESUMABLE:
+        return None
+    filled = order.filled_amount or D("0")
+    remaining = order.amount - filled
+    if remaining <= 0:
+        return None
+    return plan_order(bot, level, OrderSide(order.side), remaining)
+
+
 def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SubmitResult]:
-    """Resume a paused grid without recreating levels whose previous order filled."""
+    """Resume a paused grid without recreating filled legs or losing canceled legs."""
     start_grid(db, bot)
     db.commit()
     results: list[SubmitResult] = []
 
     levels = sorted(bot.levels, key=lambda item: item.level_index)
+
+    # First restore terminal legs that existed before pause. This is deliberate:
+    # a canceled order at the current market price is still a grid leg and must
+    # not disappear merely because initial price selection would skip it.
+    for level in levels:
+        for side in (OrderSide.BUY, OrderSide.SELL):
+            existing = _linked_order(level, side, db)
+            if existing is None or existing.status not in RESUMABLE:
+                continue
+            plan = _resumable_plan(bot, existing, level)
+            if plan is None:
+                continue
+            try:
+                results.append(submit_grid_order(db, adapter, bot, plan))
+            except ValueError as exc:
+                if "max_open_orders" in str(exc):
+                    return results
+                raise
+
+    # Then advance filled legs to their opposite side. Filled orders remain the
+    # historical record and are never replaced in-place.
     for level in levels:
         for side in (OrderSide.BUY, OrderSide.SELL):
             existing = _linked_order(level, side, db)
