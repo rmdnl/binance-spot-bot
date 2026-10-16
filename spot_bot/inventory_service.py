@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,6 +10,7 @@ from .models import InventoryApplication, InventoryPosition, SpotFill
 
 D = Decimal
 ZERO = D("0")
+ACCOUNTING_QUANTUM = D("0.000000000001")
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,17 @@ class InventoryResult:
     base_quantity: D
     quote_cost: D
     realized_pnl: D = ZERO
+
+
+def _decimal(value: D | str | int | float) -> D:
+    """Normalize DB numeric values before accounting arithmetic.
+
+    SQLite may round SQLAlchemy Numeric values through a binary float. Twelve
+    decimal places are retained, which is finer than the quote precision used
+    by Binance Spot while preventing binary-float residue from leaking into
+    accounting results.
+    """
+    return D(str(value)).quantize(ACCOUNTING_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 def _assets(symbol: str) -> tuple[str, str]:
@@ -60,9 +72,9 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
     The caller owns the transaction. All inventory changes and the application
     marker are committed or rolled back together.
     """
-    amount = D(str(fill.amount))
-    quote_amount = D(str(fill.quote_amount))
-    fee = D(str(fill.fee))
+    amount = _decimal(fill.amount)
+    quote_amount = _decimal(fill.quote_amount)
+    fee = _decimal(fill.fee)
     if amount <= ZERO or quote_amount < ZERO:
         raise ValueError("fill amount must be positive and quote amount non-negative")
     if fee < ZERO:
@@ -76,8 +88,8 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
         return InventoryResult(
             fill.id,
             False,
-            D(str(position.base_quantity)),
-            D(str(position.quote_cost)),
+            _decimal(position.base_quantity),
+            _decimal(position.quote_cost),
         )
 
     # Insert the durable idempotency marker before mutating inventory. If any
@@ -94,22 +106,22 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
         if base_received < ZERO:
             raise ValueError("base-asset fee exceeds bought amount")
         cost = quote_amount + fee if fee_currency == quote else quote_amount
-        position.base_quantity = D(str(position.base_quantity)) + base_received
-        position.quote_cost = D(str(position.quote_cost)) + cost
+        position.base_quantity = _decimal(position.base_quantity) + base_received
+        position.quote_cost = _decimal(position.quote_cost) + cost
         realized = ZERO
     elif fill.side.lower() == "sell":
         base_sold = amount + fee if fee_currency == base_asset else amount
-        current_qty = D(str(position.base_quantity))
-        current_cost = D(str(position.quote_cost))
+        current_qty = _decimal(position.base_quantity)
+        current_cost = _decimal(position.quote_cost)
         if base_sold > current_qty:
             raise ValueError("sell fill exceeds available inventory")
-        released_cost = ZERO if current_qty == ZERO else current_cost * base_sold / current_qty
+        released_cost = ZERO if current_qty == ZERO else _decimal(current_cost * base_sold / current_qty)
         proceeds = quote_amount - fee if fee_currency == quote else quote_amount
         if proceeds < ZERO:
             raise ValueError("quote-asset fee exceeds sell proceeds")
-        position.base_quantity = current_qty - base_sold
-        position.quote_cost = current_cost - released_cost
-        realized = proceeds - released_cost
+        position.base_quantity = _decimal(current_qty - base_sold)
+        position.quote_cost = _decimal(current_cost - released_cost)
+        realized = _decimal(proceeds - released_cost)
     else:
         raise ValueError(f"unsupported fill side: {fill.side}")
 
@@ -121,7 +133,7 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
     return InventoryResult(
         fill.id,
         True,
-        D(str(position.base_quantity)),
-        D(str(position.quote_cost)),
+        _decimal(position.base_quantity),
+        _decimal(position.quote_cost),
         realized,
     )
