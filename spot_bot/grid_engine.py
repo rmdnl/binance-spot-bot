@@ -166,16 +166,39 @@ def _resumable_plan(bot: GridBot, order: SpotOrder, level: GridLevel) -> GridOrd
 
 
 def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SubmitResult]:
-    """Resume a paused grid without recreating filled legs or losing canceled legs."""
+    """Resume only the persisted grid lifecycle without creating a fresh grid."""
     start_grid(db, bot)
     db.commit()
     results: list[SubmitResult] = []
 
     levels = sorted(bot.levels, key=lambda item: item.level_index)
 
-    # First restore terminal legs that existed before pause. This is deliberate:
-    # a canceled order at the current market price is still a grid leg and must
-    # not disappear merely because initial price selection would skip it.
+    # Filled legs advance first so the returned submission order is deterministic
+    # and the opposite leg is restored before canceled legs are reopened.
+    for level in levels:
+        for side in (OrderSide.BUY, OrderSide.SELL):
+            existing = _linked_order(level, side, db)
+            if existing is None or existing.status != OrderStatus.FILLED.value:
+                continue
+            plan = opposite_plan(bot, existing)
+            if plan is None:
+                continue
+            target_level = next((item for item in levels if item.level_index == plan.level_index), None)
+            if target_level is None:
+                continue
+            target_order = _linked_order(target_level, plan.side, db)
+            if target_order is not None and target_order.status in ACTIVE:
+                continue
+            try:
+                results.append(submit_grid_order(db, adapter, bot, plan))
+            except ValueError as exc:
+                if "max_open_orders" in str(exc):
+                    return results
+                raise
+
+    # Then restore only legs that existed before the pause and became terminal.
+    # Resume is not a fresh initial-grid operation: newly discovered levels belong
+    # to the normal grid engine after execution advances, not to pause/resume repair.
     for level in levels:
         for side in (OrderSide.BUY, OrderSide.SELL):
             existing = _linked_order(level, side, db)
@@ -191,28 +214,6 @@ def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> li
                     return results
                 raise
 
-    # Then advance filled legs to their opposite side. Filled orders remain the
-    # historical record and are never replaced in-place.
-    for level in levels:
-        for side in (OrderSide.BUY, OrderSide.SELL):
-            existing = _linked_order(level, side, db)
-            if existing is None or existing.status != OrderStatus.FILLED.value:
-                continue
-            plan = opposite_plan(bot, existing)
-            if plan is None:
-                continue
-            target_level = levels[plan.level_index]
-            target_order = _linked_order(target_level, plan.side, db)
-            if target_order is not None and target_order.status in ACTIVE:
-                continue
-            try:
-                results.append(submit_grid_order(db, adapter, bot, plan))
-            except ValueError as exc:
-                if "max_open_orders" in str(exc):
-                    return results
-                raise
-
-    results.extend(execute_initial_grid(db, adapter, bot))
     return results
 
 
@@ -225,7 +226,9 @@ def opposite_plan(bot: GridBot, filled_order: SpotOrder) -> GridOrderPlan | None
     target_index = linked.level_index + 1 if opposite == OrderSide.SELL else linked.level_index - 1
     if target_index < 0 or target_index >= bot.grids:
         return None
-    target = levels[target_index]
+    target = next((level for level in levels if level.level_index == target_index), None)
+    if target is None:
+        return None
     if opposite == OrderSide.SELL:
         amount = filled_order.filled_amount
     else:
