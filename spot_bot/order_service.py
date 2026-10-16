@@ -73,13 +73,12 @@ def create_intent(db: Session, request: OrderRequest) -> SpotOrder:
     return order
 
 
-def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any]) -> None:
+def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any], *, allow_rejected_retry: bool = False) -> None:
     incoming = _map_status(raw.get("status"))
-    allowed = _ALLOWED_TRANSITIONS.get(order.status, {order.status})
+    current = OrderStatus.NEW.value if allow_rejected_retry and order.status == OrderStatus.REJECTED.value else order.status
+    allowed = _ALLOWED_TRANSITIONS.get(current, {current})
     if incoming not in allowed:
-        raise ValueError(
-            f"invalid order state transition: {order.status} -> {incoming}"
-        )
+        raise ValueError(f"invalid order state transition: {order.status} -> {incoming}")
     order.exchange_order_id = str(raw.get("id")) if raw.get("id") is not None else order.exchange_order_id
     order.status = incoming
     order.filled_amount = D(str(raw.get("filled") or "0"))
@@ -101,6 +100,7 @@ def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only:
         order.amount, order.price, order.client_order_id,
         post_only or order.order_type == OrderType.LIMIT_MAKER.value,
     )
+    retrying_rejected = order.status == OrderStatus.REJECTED.value
     try:
         adapter.validate_order(request)
         raw = adapter.create_order(request)
@@ -109,7 +109,7 @@ def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only:
         order.error_message = str(exc)[:500]
         db.flush()
         raise
-    _apply_exchange_state(order, raw)
+    _apply_exchange_state(order, raw, allow_rejected_retry=retrying_rejected)
     db.flush()
     return SubmitResult(order, raw)
 
@@ -125,7 +125,7 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
         # Unknown exchange/network errors are NOT treated as "not found". Never risk a duplicate order.
         raise
     if existing:
-        _apply_exchange_state(order, existing)
+        _apply_exchange_state(order, existing, allow_rejected_retry=order.status == OrderStatus.REJECTED.value)
         record_fills(db, adapter, order)
         db.flush()
         return SubmitResult(order, existing)
