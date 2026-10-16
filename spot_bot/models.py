@@ -115,6 +115,9 @@ class SpotFill(Base):
     exchange_trade_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     order: Mapped[SpotOrder] = relationship(back_populates="fills")
+    inventory_application: Mapped["InventoryApplication | None"] = relationship(
+        back_populates="fill", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class InventoryPosition(Base):
@@ -130,6 +133,14 @@ class InventoryPosition(Base):
     __table_args__ = (
         UniqueConstraint("environment", "symbol", name="uq_inventory_environment_symbol"),
     )
+
+
+class InventoryApplication(Base):
+    __tablename__ = "inventory_applications"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    fill_id: Mapped[int] = mapped_column(ForeignKey("spot_fills.id"), unique=True, index=True)
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    fill: Mapped[SpotFill] = relationship(back_populates="inventory_application")
 
 
 class GridBot(Base):
