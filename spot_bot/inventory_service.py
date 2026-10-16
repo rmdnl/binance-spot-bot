@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import InventoryApplication, InventoryPosition, SpotFill
+from .models import InventoryApplication, InventoryPosition, RealizedPNLEntry, SpotFill
 
 D = Decimal
 ZERO = D("0")
@@ -23,13 +23,6 @@ class InventoryResult:
 
 
 def _decimal(value: D | str | float) -> D:
-    """Normalize DB numeric values before accounting arithmetic.
-
-    SQLite may round SQLAlchemy Numeric values through a binary float. Twelve
-    decimal places are retained, which is finer than the quote precision used
-    by Binance Spot while preventing binary-float residue from leaking into
-    accounting results.
-    """
     return D(str(value)).quantize(ACCOUNTING_QUANTUM, rounding=ROUND_HALF_UP)
 
 
@@ -67,11 +60,7 @@ def _position(db: Session, fill: SpotFill) -> InventoryPosition:
 
 
 def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
-    """Apply one exchange fill to persistent inventory exactly once.
-
-    The caller owns the transaction. All inventory changes and the application
-    marker are committed or rolled back together.
-    """
+    """Apply one exchange fill and its realized PNL atomically within caller transaction."""
     amount = _decimal(fill.amount)
     quote_amount = _decimal(fill.quote_amount)
     fee = _decimal(fill.fee)
@@ -80,26 +69,20 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
     if fee < ZERO:
         raise ValueError("fill fee cannot be negative")
 
-    already_applied = db.scalar(
-        select(InventoryApplication).where(InventoryApplication.fill_id == fill.id)
-    )
     position = _position(db, fill)
-    if already_applied is not None:
+    if db.scalar(select(InventoryApplication).where(InventoryApplication.fill_id == fill.id)) is not None:
+        existing_pnl = db.scalar(select(RealizedPNLEntry).where(RealizedPNLEntry.fill_id == fill.id))
         return InventoryResult(
-            fill.id,
-            False,
-            _decimal(position.base_quantity),
-            _decimal(position.quote_cost),
+            fill.id, False, _decimal(position.base_quantity), _decimal(position.quote_cost),
+            _decimal(existing_pnl.realized_pnl) if existing_pnl else ZERO,
         )
 
-    # Insert the durable idempotency marker before mutating inventory. If any
-    # later validation fails, the caller's transaction rollback removes it too.
     db.add(InventoryApplication(fill_id=fill.id))
     db.flush()
-
     _, quote = _assets(fill.symbol)
     fee_currency = (fill.fee_currency or "").upper()
     base_asset = position.base_asset.upper()
+    realized = ZERO
 
     if fill.side.lower() == "buy":
         base_received = amount - fee if fee_currency == base_asset else amount
@@ -108,7 +91,6 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
         cost = quote_amount + fee if fee_currency == quote else quote_amount
         position.base_quantity = _decimal(position.base_quantity) + base_received
         position.quote_cost = _decimal(position.quote_cost) + cost
-        realized = ZERO
     elif fill.side.lower() == "sell":
         base_sold = amount + fee if fee_currency == base_asset else amount
         current_qty = _decimal(position.base_quantity)
@@ -116,24 +98,28 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
         if base_sold > current_qty:
             raise ValueError("sell fill exceeds available inventory")
         released_cost = ZERO if current_qty == ZERO else _decimal(current_cost * base_sold / current_qty)
-        proceeds = quote_amount - fee if fee_currency == quote else quote_amount
+        proceeds = _decimal(quote_amount - fee) if fee_currency == quote else quote_amount
         if proceeds < ZERO:
             raise ValueError("quote-asset fee exceeds sell proceeds")
         position.base_quantity = _decimal(current_qty - base_sold)
         position.quote_cost = _decimal(current_cost - released_cost)
         realized = _decimal(proceeds - released_cost)
+        db.add(RealizedPNLEntry(
+            fill_id=fill.id,
+            environment=fill.order.environment,
+            symbol=fill.symbol,
+            quantity=base_sold,
+            entry_cost=released_cost,
+            proceeds=proceeds,
+            fees=fee if fee_currency == quote else ZERO,
+            realized_pnl=realized,
+            timestamp=fill.timestamp,
+        ))
     else:
         raise ValueError(f"unsupported fill side: {fill.side}")
 
     if position.base_quantity < ZERO or position.quote_cost < ZERO:
         raise ValueError("inventory invariant violated")
-
     position.updated_at = fill.timestamp
     db.flush()
-    return InventoryResult(
-        fill.id,
-        True,
-        _decimal(position.base_quantity),
-        _decimal(position.quote_cost),
-        realized,
-    )
+    return InventoryResult(fill.id, True, _decimal(position.base_quantity), _decimal(position.quote_cost), realized)
