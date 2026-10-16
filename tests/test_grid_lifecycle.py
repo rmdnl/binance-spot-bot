@@ -183,6 +183,19 @@ class FakeGridAdapter:
         return []
 
 
+class CancelRaceAdapter(FakeGridAdapter):
+    def __init__(self):
+        super().__init__()
+        self.cancel_attempts = 0
+
+    def cancel_order(self, exchange_order_id, symbol):
+        self.cancel_attempts += 1
+        self.orders[exchange_order_id]["status"] = "closed"
+        self.orders[exchange_order_id]["filled"] = "0.002"
+        self.orders[exchange_order_id]["average"] = "80000"
+        raise ccxt.InvalidOrder("order already filled")
+
+
 def test_execute_initial_grid_respects_max_open_orders():
     db = db_session()
     bot = GridBot(
@@ -237,6 +250,29 @@ def test_pause_execution_commits_state_then_cancels_active_orders():
     assert bot.status == GridStatus.PAUSED.value
     assert len(canceled) == 1
     assert adapter.canceled == ["1"]
+    assert grid_open_order_ids(db, bot) == []
+
+
+def test_pause_execution_preserves_fill_from_cancel_race():
+    db = db_session()
+    bot = GridBot(
+        environment="testnet", symbol="BTC/USDT", grid_type="arithmetic",
+        lower_price=D("80000"), upper_price=D("90000"), grids=3,
+        capital_quote=D("500"), max_open_orders=3,
+    )
+    db.add(bot)
+    db.flush()
+    start_grid(db, bot)
+    db.commit()
+    adapter = CancelRaceAdapter()
+    submit_grid_order(db, adapter, bot, GridOrderPlan(0, OrderSide.BUY, D("80000"), D("0.002")))
+
+    canceled = pause_grid_execution(db, adapter, bot)
+
+    assert len(canceled) == 1
+    order = canceled[0]
+    assert order.status == "filled"
+    assert order.filled_amount == D("0.002")
     assert grid_open_order_ids(db, bot) == []
 
 
