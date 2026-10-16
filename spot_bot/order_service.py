@@ -124,7 +124,12 @@ def cancel_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrd
         raise ValueError(f"order {order.id} cannot be canceled from {order.status}")
     if not order.exchange_order_id:
         raise ValueError("cannot cancel order without exchange_order_id")
-    raw = adapter.cancel_order(order.exchange_order_id, order.symbol)
+    try:
+        raw = adapter.cancel_order(order.exchange_order_id, order.symbol)
+    except (ccxt.OrderNotFound, ccxt.InvalidOrder):
+        # A cancel race is not proof that no fill occurred. Re-read the
+        # exchange order and let its terminal status/fill quantity win.
+        raw = adapter.fetch_order(order.exchange_order_id, order.symbol)
     _apply_exchange_state(order, raw)
     if order.status not in {OrderStatus.CANCELED.value, OrderStatus.FILLED.value, OrderStatus.EXPIRED.value}:
         order.status = OrderStatus.CANCELED.value
