@@ -9,6 +9,9 @@ from spot_bot.grid_engine import (
     GridOrderPlan,
     execute_initial_grid,
     opposite_plan,
+    pause_grid_execution,
+    resume_grid_execution,
+    stop_grid_execution,
     submit_grid_order,
 )
 from spot_bot.grid_service import (
@@ -150,6 +153,8 @@ def test_opposite_plan_buy_uses_sell_proceeds_after_fee():
 class FakeGridAdapter:
     def __init__(self):
         self.created = []
+        self.canceled = []
+        self.orders = {}
 
     def ticker(self, symbol):
         return {"last": "85000"}
@@ -161,8 +166,21 @@ class FakeGridAdapter:
         return None
 
     def create_order(self, request):
+        exchange_id = str(len(self.created) + 1)
         self.created.append(request)
-        return {"id": str(len(self.created)), "status": "open", "filled": "0", "average": None}
+        self.orders[exchange_id] = {"id": exchange_id, "status": "open", "filled": "0", "average": None}
+        return self.orders[exchange_id]
+
+    def cancel_order(self, exchange_order_id, symbol):
+        self.canceled.append(exchange_order_id)
+        self.orders[exchange_order_id]["status"] = "canceled"
+        return self.orders[exchange_order_id]
+
+    def fetch_order(self, exchange_order_id, symbol):
+        return self.orders[exchange_order_id]
+
+    def recent_trades(self, symbol, limit=100):
+        return []
 
 
 def test_execute_initial_grid_respects_max_open_orders():
@@ -198,3 +216,68 @@ def test_submit_grid_order_refuses_paused_bot():
     adapter = FakeGridAdapter()
     with pytest.raises(ValueError, match="not running"):
         submit_grid_order(db, adapter, bot, GridOrderPlan(0, OrderSide.BUY, levels[0].price, D("0.002")))
+
+
+def test_pause_execution_commits_state_then_cancels_active_orders():
+    db = db_session()
+    bot = GridBot(
+        environment="testnet", symbol="BTC/USDT", grid_type="arithmetic",
+        lower_price=D("80000"), upper_price=D("90000"), grids=3,
+        capital_quote=D("500"), max_open_orders=3,
+    )
+    db.add(bot)
+    db.flush()
+    start_grid(db, bot)
+    db.commit()
+    adapter = FakeGridAdapter()
+    submit_grid_order(db, adapter, bot, GridOrderPlan(0, OrderSide.BUY, D("80000"), D("0.002")))
+
+    canceled = pause_grid_execution(db, adapter, bot)
+
+    assert bot.status == GridStatus.PAUSED.value
+    assert len(canceled) == 1
+    assert adapter.canceled == ["1"]
+    assert grid_open_order_ids(db, bot) == []
+
+
+def test_resume_execution_recreates_missing_orders():
+    db = db_session()
+    bot = GridBot(
+        environment="testnet", symbol="BTC/USDT", grid_type="arithmetic",
+        lower_price=D("80000"), upper_price=D("90000"), grids=3,
+        capital_quote=D("500"), max_open_orders=3, status=GridStatus.PAUSED.value,
+    )
+    db.add(bot)
+    db.flush()
+    materialize_levels(db, bot)
+    db.commit()
+    adapter = FakeGridAdapter()
+
+    results = resume_grid_execution(db, adapter, bot)
+
+    assert bot.status == GridStatus.RUNNING.value
+    assert len(results) == 2
+    assert len(grid_open_order_ids(db, bot)) == 2
+
+
+def test_stop_execution_cancels_all_active_orders():
+    db = db_session()
+    bot = GridBot(
+        environment="testnet", symbol="BTC/USDT", grid_type="arithmetic",
+        lower_price=D("80000"), upper_price=D("90000"), grids=3,
+        capital_quote=D("500"), max_open_orders=3,
+    )
+    db.add(bot)
+    db.flush()
+    start_grid(db, bot)
+    db.commit()
+    adapter = FakeGridAdapter()
+    submit_grid_order(db, adapter, bot, GridOrderPlan(0, OrderSide.BUY, D("80000"), D("0.002")))
+    submit_grid_order(db, adapter, bot, GridOrderPlan(1, OrderSide.BUY, D("85000"), D("0.001")))
+
+    canceled = stop_grid_execution(db, adapter, bot)
+
+    assert bot.status == GridStatus.STOPPED.value
+    assert len(canceled) == 2
+    assert sorted(adapter.canceled) == ["1", "2"]
+    assert grid_open_order_ids(db, bot) == []
