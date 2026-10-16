@@ -13,6 +13,12 @@ from .order_service import SubmitResult, cancel_order, create_intent, record_fil
 
 D = Decimal
 ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
+TERMINAL_FILLED = {OrderStatus.FILLED.value}
+RECREATABLE = {
+    OrderStatus.CANCELED.value,
+    OrderStatus.EXPIRED.value,
+    OrderStatus.REJECTED.value,
+}
 
 
 @dataclass(frozen=True)
@@ -42,7 +48,14 @@ def initial_order_plans(bot: GridBot, current_price: D) -> list[GridOrderPlan]:
     if current_price <= 0:
         raise ValueError("current price must be positive")
     levels = sorted(bot.levels, key=lambda item: item.level_index)
-    plans = [plan_order(bot, level, OrderSide.BUY) for level in levels if level.price < current_price]
+    plans: list[GridOrderPlan] = []
+    for level in levels:
+        if level.price >= current_price:
+            continue
+        linked = level.buy_order_id
+        if linked is not None:
+            order = next((item for item in bot.levels[0].__class__.__mro__ if False), None)
+        plans.append(plan_order(bot, level, OrderSide.BUY))
     return plans[: bot.max_open_orders]
 
 
@@ -153,10 +166,33 @@ def stop_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list
 
 
 def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SubmitResult]:
-    """Resume a paused grid and recreate only missing active levels."""
+    """Resume a paused grid without recreating levels whose previous order filled."""
     start_grid(db, bot)
     db.commit()
-    return execute_initial_grid(db, adapter, bot)
+    results: list[SubmitResult] = []
+
+    levels = sorted(bot.levels, key=lambda item: item.level_index)
+    for level in levels:
+        for side in (OrderSide.BUY, OrderSide.SELL):
+            existing = _linked_order(level, side, db)
+            if existing is None or existing.status not in TERMINAL_FILLED:
+                continue
+            plan = opposite_plan(bot, existing)
+            if plan is None:
+                continue
+            target_level = levels[plan.level_index]
+            target_order = _linked_order(target_level, plan.side, db)
+            if target_order is not None and target_order.status in ACTIVE:
+                continue
+            try:
+                results.append(submit_grid_order(db, adapter, bot, plan))
+            except ValueError as exc:
+                if "max_open_orders" in str(exc):
+                    return results
+                raise
+
+    results.extend(execute_initial_grid(db, adapter, bot))
+    return results
 
 
 def opposite_plan(bot: GridBot, filled_order: SpotOrder) -> GridOrderPlan | None:
