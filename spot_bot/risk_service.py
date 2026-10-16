@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import RiskState
@@ -12,10 +13,22 @@ D = Decimal
 
 def get_risk_state(db: Session) -> RiskState:
     state = db.get(RiskState, 1)
+    if state is not None:
+        return state
+
+    # Bootstrap the singleton safely when multiple workers start together. The
+    # nested transaction confines a duplicate INSERT to a savepoint, allowing
+    # the losing worker to re-read the row without poisoning its outer session.
+    try:
+        with db.begin_nested():
+            db.add(RiskState(id=1, halted=False, reason=None))
+            db.flush()
+    except IntegrityError:
+        pass
+
+    state = db.get(RiskState, 1)
     if state is None:
-        state = RiskState(id=1, halted=False, reason=None)
-        db.add(state)
-        db.flush()
+        raise RuntimeError("risk state could not be initialized")
     return state
 
 
