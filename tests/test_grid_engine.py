@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 from spot_bot.grid_engine import (
     advance_after_fill,
     initial_order_plans,
+    pause_grid_execution,
     resume_grid_execution,
+    stop_grid_execution,
     submit_grid_order,
 )
 from spot_bot.grid_service import pause_grid, start_grid
@@ -33,6 +35,11 @@ class FakeAdapter:
             "fee": {"cost": "0", "currency": "USDT"},
         }
         self.orders[order_id] = raw
+        return raw
+
+    def cancel_order(self, order_id, symbol):
+        raw = self.orders[order_id]
+        raw["status"] = "canceled"
         return raw
 
     def fetch_order(self, order_id, symbol):
@@ -194,3 +201,34 @@ def test_resume_reopens_only_unfilled_remainder_of_partial_cancel():
     assert results[0].order.side == OrderSide.BUY.value
     assert results[0].order.price == order.price
     assert results[0].order.amount == order.amount - order.filled_amount
+
+
+def test_grid_lifecycle_state_machine_pause_resume_stop():
+    db = session()
+    bot = make_bot(db)
+    bot.max_open_orders = 2
+    start_test_grid(db, bot)
+    adapter = FakeAdapter()
+
+    first = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[0])
+    second = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[1])
+    assert bot.status == "running"
+    assert first.order.status == OrderStatus.OPEN.value
+    assert second.order.status == OrderStatus.OPEN.value
+
+    paused_orders = pause_grid_execution(db, adapter, bot)
+    assert bot.status == "paused"
+    assert {order.status for order in paused_orders} == {OrderStatus.CANCELED.value}
+    assert all(order.status == OrderStatus.CANCELED.value for order in (first.order, second.order))
+
+    resumed = resume_grid_execution(db, adapter, bot)
+    assert bot.status == "running"
+    assert len(resumed) == 2
+    assert all(result.exchange is not None for result in resumed)
+    assert all(result.order.status == OrderStatus.OPEN.value for result in resumed)
+
+    stopped_orders = stop_grid_execution(db, adapter, bot)
+    assert bot.status == "stopped"
+    assert len(stopped_orders) == 2
+    assert all(order.status == OrderStatus.CANCELED.value for order in stopped_orders)
+    assert not [order for order in (first.order, second.order) if order.status in {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}]
