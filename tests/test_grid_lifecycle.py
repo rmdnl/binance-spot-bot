@@ -58,7 +58,6 @@ def test_grid_pause_stop_lifecycle():
 
 
 def test_next_grid_price_moves_one_level():
-    db = db_session()
     bot = GridBot(
         environment="testnet", symbol="BTC/USDT", grid_type="arithmetic",
         lower_price=D("80000"), upper_price=D("90000"), grids=11,
