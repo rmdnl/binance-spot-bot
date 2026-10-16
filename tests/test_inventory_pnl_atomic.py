@@ -88,6 +88,7 @@ def test_inventory_and_pnl_commit_together(db):
 def test_failed_application_rolls_back_marker_inventory_and_pnl(db):
     position = make_position(db)
     fill = make_sell(db, amount="0.003")
+    db.commit()
 
     with pytest.raises(ValueError, match="exceeds available inventory"):
         apply_fill(db, fill)
@@ -116,10 +117,11 @@ def test_duplicate_fill_does_not_double_account(db):
 def test_pnl_and_inventory_rollback_on_later_constraint_failure(db):
     position = make_position(db)
     fill = make_sell(db)
+    db.commit()
+
     apply_fill(db, fill)
     db.flush()
 
-    # Force the same unique fill_id constraint that protects PNL idempotency.
     db.add(RealizedPNLEntry(
         fill_id=fill.id,
         environment=fill.order.environment,
