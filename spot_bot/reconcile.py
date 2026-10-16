@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .exchange import BinanceSpot
@@ -32,23 +32,15 @@ def reconcile_open_orders(db: Session, environment: Environment, symbol: str | N
     adapter = BinanceSpot(environment)
     changed = fills = 0
     for order in orders:
-        before = db.scalar(
-            select(SpotFill.id)
-            .where(SpotFill.order_id == order.id)
-            .order_by(SpotFill.id.desc())
-            .limit(1)
-        )
+        before_status = order.status
         before_count = db.scalar(
-            select(SpotFill.id).where(SpotFill.order_id == order.id).order_by(SpotFill.id.desc()).limit(1)
+            select(func.count()).select_from(SpotFill).where(SpotFill.order_id == order.id)
         )
         reconcile_order(db, adapter, order)
         after_count = db.scalar(
-            select(SpotFill.id).where(SpotFill.order_id == order.id).order_by(SpotFill.id.desc()).limit(1)
+            select(func.count()).select_from(SpotFill).where(SpotFill.order_id == order.id)
         )
-        if before_count is None and after_count is not None:
-            fills += 1
-        elif before_count is not None and after_count is not None:
-            fills += max(0, after_count - before_count)
-        changed += order.status != before_status if False else 0
+        fills += max(0, after_count - before_count)
+        changed += order.status != before_status
     db.commit()
     return ReconcileSummary(len(orders), changed, fills)
