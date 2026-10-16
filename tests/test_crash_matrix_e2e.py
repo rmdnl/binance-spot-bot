@@ -83,7 +83,13 @@ def make_bot(db):
     db.add(bot)
     db.flush()
     for index in range(11):
-        db.add(GridLevel(bot_id=bot.id, level_index=index, price=D(80000 + index * 1000))
+        db.add(
+            GridLevel(
+                bot_id=bot.id,
+                level_index=index,
+                price=D(80000 + index * 1000),
+            )
+        )
     db.commit()
     return bot
 
