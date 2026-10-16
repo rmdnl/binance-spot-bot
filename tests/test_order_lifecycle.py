@@ -2,10 +2,10 @@ from decimal import Decimal as D
 
 import ccxt
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from spot_bot.models import Base, Environment, OrderRequest, OrderSide, OrderStatus, OrderType
+from spot_bot.models import Base, Environment, OrderRequest, OrderSide, OrderStatus, OrderType, SpotOrder, SpotFill
 from spot_bot.exchange import BinanceSpot, ExchangeSafetyError
 from spot_bot.order_service import cancel_order, create_intent, record_fills, recover_or_submit, reconcile_order
 
@@ -92,6 +92,19 @@ def test_client_order_id_is_36_chars():
     assert len(order.client_order_id) == 36
 
 
+def test_duplicate_client_order_id_is_rejected():
+    db = db_session()
+    first = make_order(db)
+    db.commit()
+    with pytest.raises(ValueError, match="already exists"):
+        create_intent(db, OrderRequest(
+            Environment.TESTNET, "BTC/USDT", OrderSide.BUY, OrderType.LIMIT,
+            D("0.01"), D("80000"), first.client_order_id,
+        ))
+    db.rollback()
+    assert db.scalar(select(SpotOrder).where(SpotOrder.client_order_id == first.client_order_id)).id == first.id
+
+
 def test_recovery_uses_existing_order_and_does_not_resubmit():
     db = db_session()
     order = make_order(db)
@@ -109,6 +122,8 @@ def test_unknown_lookup_error_fails_closed_without_resubmit():
     with pytest.raises(ccxt.NetworkError):
         recover_or_submit(db, adapter, order)
     assert adapter.submissions == 0
+    db.rollback()
+    assert db.get(SpotOrder, order.id).status == OrderStatus.NEW.value
 
 
 def test_order_status_mapping_accepts_binance_new():
@@ -133,6 +148,7 @@ def test_reconcile_updates_status_and_fill_recording_is_idempotent():
     assert order.status == OrderStatus.FILLED.value
     assert record_fills(db, adapter, order) == 1
     assert record_fills(db, adapter, order) == 0
+    assert db.scalar(select(SpotFill).where(SpotFill.exchange_trade_id == "trade-1")).order_id == order.id
 
 
 def test_cancel_updates_local_state_and_is_single_exchange_call():
@@ -145,3 +161,13 @@ def test_cancel_updates_local_state_and_is_single_exchange_call():
     cancel_order(db, adapter, order)
     assert order.status == OrderStatus.CANCELED.value
     assert adapter.cancel_calls == 1
+
+
+def test_cancel_does_not_allow_terminal_order():
+    db = db_session()
+    order = make_order(db)
+    order.status = OrderStatus.FILLED.value
+    order.exchange_order_id = "123"
+    db.commit()
+    with pytest.raises(ValueError, match="cannot be canceled"):
+        cancel_order(db, FakeAdapter(), order)
