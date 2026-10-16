@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 from spot_bot.grid_engine import (
     advance_after_fill,
     initial_order_plans,
-    opposite_plan,
     submit_grid_order,
 )
 from spot_bot.grid_service import start_grid
