@@ -16,7 +16,6 @@ from spot_bot.models import (
     OrderType,
     RealizedPNLEntry,
     SpotFill,
-    SpotOrder,
 )
 from spot_bot.order_service import create_intent
 
@@ -76,8 +75,8 @@ def test_reconcile_twice_does_not_duplicate_inventory_or_realized_pnl(monkeypatc
         quote_cost=D("0"),
     )
     db.add(position)
-    buy = make_order(db, OrderSide.BUY, "buy-ex", "80000")
-    sell = make_order(db, OrderSide.SELL, "sell-ex", "81000")
+    make_order(db, OrderSide.BUY, "buy-ex", "80000")
+    make_order(db, OrderSide.SELL, "sell-ex", "81000")
     db.commit()
 
     adapter = FakeReconcileAdapter()
