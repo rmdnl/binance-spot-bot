@@ -6,9 +6,10 @@ from sqlalchemy.orm import Session
 from spot_bot.grid_engine import (
     advance_after_fill,
     initial_order_plans,
+    resume_grid_execution,
     submit_grid_order,
 )
-from spot_bot.grid_service import start_grid
+from spot_bot.grid_service import pause_grid, start_grid
 from spot_bot.models import Base, Environment, GridBot, GridLevel, OrderSide, OrderStatus
 
 
@@ -42,6 +43,9 @@ class FakeAdapter:
 
     def recent_trades(self, symbol, limit=100):
         return self.trades
+
+    def ticker(self, symbol):
+        return {"last": "85000"}
 
 
 def session():
@@ -133,3 +137,60 @@ def test_terminal_order_slot_can_be_reused():
     second = submit_grid_order(db, adapter, bot, plan)
     assert second.order.id != first.order.id
     assert len(adapter.submissions) == 2
+
+
+def test_resume_does_not_recreate_filled_leg_and_reopens_canceled_leg():
+    db = session()
+    bot = make_bot(db)
+    bot.max_open_orders = 2
+    start_test_grid(db, bot)
+    adapter = FakeAdapter()
+
+    filled = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[0])
+    filled_order = filled.order
+    filled_order.status = OrderStatus.FILLED.value
+    filled_order.filled_amount = filled_order.amount
+    filled_order.average_price = filled_order.price
+    db.commit()
+
+    canceled_plan = initial_order_plans(bot, D("85000"))[1]
+    canceled = submit_grid_order(db, adapter, bot, canceled_plan)
+    canceled_order = canceled.order
+    canceled_order.status = OrderStatus.CANCELED.value
+    db.commit()
+
+    pause_grid(db, bot)
+    db.commit()
+    results = resume_grid_execution(db, adapter, bot)
+
+    assert len(results) == 2
+    assert len(adapter.submissions) == 4
+    assert results[0].order.side == OrderSide.BUY.value
+    assert results[0].order.price == D("81000")
+    assert results[1].order.side == OrderSide.SELL.value
+    assert results[1].order.price == D("81000")
+    assert results[1].order.amount == filled_order.amount
+
+
+def test_resume_reopens_only_unfilled_remainder_of_partial_cancel():
+    db = session()
+    bot = make_bot(db)
+    bot.max_open_orders = 1
+    start_test_grid(db, bot)
+    adapter = FakeAdapter()
+
+    plan = initial_order_plans(bot, D("85000"))[0]
+    first = submit_grid_order(db, adapter, bot, plan)
+    order = first.order
+    order.status = OrderStatus.CANCELED.value
+    order.filled_amount = order.amount / D("2")
+    db.commit()
+
+    pause_grid(db, bot)
+    db.commit()
+    results = resume_grid_execution(db, adapter, bot)
+
+    assert len(results) == 1
+    assert results[0].order.side == OrderSide.BUY.value
+    assert results[0].order.price == order.price
+    assert results[0].order.amount == order.amount - order.filled_amount
