@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .exchange import BinanceSpot
 from .models import Environment, OrderRequest, OrderSide, OrderStatus, OrderType, SpotFill, SpotOrder
+from .risk_service import assert_trading_allowed
 
 D = Decimal
 FEE_SCALE = D("0.00000001")
@@ -27,19 +28,17 @@ _ALLOWED_TRANSITIONS = {
     OrderStatus.UNKNOWN.value: {OrderStatus.UNKNOWN.value},
 }
 
-
 @dataclass(frozen=True)
 class SubmitResult:
     order: SpotOrder
     exchange: dict[str, Any] | None
 
-
 def _client_id() -> str:
     import secrets
     return "spot-" + secrets.token_hex(16)[:31]
 
-
 def create_intent(db: Session, request: OrderRequest) -> SpotOrder:
+    assert_trading_allowed(db)
     if request.amount <= 0:
         raise ValueError("amount must be positive")
     if request.order_type != OrderType.MARKET and (request.price is None or request.price <= 0):
@@ -54,7 +53,6 @@ def create_intent(db: Session, request: OrderRequest) -> SpotOrder:
     db.add(order)
     db.flush()
     return order
-
 
 def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any], *, allow_rejected_retry: bool = False) -> None:
     incoming = _map_status(raw.get("status"))
@@ -71,8 +69,8 @@ def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any], *, allow_reject
     if fee.get("cost") is not None and str(fee.get("currency") or "") == order.symbol.split("/")[1]:
         order.fee_quote = D(str(fee["cost"])).quantize(FEE_SCALE)
 
-
 def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False) -> SubmitResult:
+    assert_trading_allowed(db)
     if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
     request = OrderRequest(Environment(order.environment), order.symbol, OrderSide(order.side), OrderType(order.order_type), order.amount, order.price, order.client_order_id, post_only or order.order_type == OrderType.LIMIT_MAKER.value)
@@ -89,8 +87,8 @@ def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only:
     db.flush()
     return SubmitResult(order, raw)
 
-
 def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False) -> SubmitResult:
+    assert_trading_allowed(db)
     if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
     try:
@@ -106,10 +104,8 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
         return SubmitResult(order, existing)
     return submit_order(db, adapter, order, post_only)
 
-
 def _map_status(status: str | None) -> str:
     return {"new": OrderStatus.NEW.value, "open": OrderStatus.OPEN.value, "closed": OrderStatus.FILLED.value, "canceled": OrderStatus.CANCELED.value, "expired": OrderStatus.EXPIRED.value, "rejected": OrderStatus.REJECTED.value, "partially_filled": OrderStatus.PARTIALLY_FILLED.value}.get((status or "").lower(), OrderStatus.UNKNOWN.value)
-
 
 def reconcile_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrder:
     if order.status not in ACTIVE:
@@ -119,7 +115,6 @@ def reconcile_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> Spot
     record_fills(db, adapter, order)
     db.flush()
     return order
-
 
 def cancel_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrder:
     if order.status not in ACTIVE:
@@ -136,7 +131,6 @@ def cancel_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrd
         order.status = OrderStatus.CANCELED.value
     db.flush()
     return order
-
 
 def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
     if not order.exchange_order_id:
@@ -160,13 +154,10 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
                 db.add(fill)
                 db.flush()
         except IntegrityError:
-            # Another reconcile worker won the unique exchange_trade_id race.
-            # The savepoint rollback keeps the caller transaction usable.
             existing.add(trade_id)
             continue
         existing.add(trade_id)
         count += 1
-
     db.flush()
     quote = order.symbol.split("/")[1]
     fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
