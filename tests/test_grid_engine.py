@@ -101,9 +101,9 @@ def test_filled_buy_advances_to_next_sell_level():
     adapter = FakeAdapter()
     first = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[0])
     first_order = first.order
-    first_order.status = OrderStatus.FILLED.value
-    first_order.filled_amount = first_order.amount
-    db.commit()
+    adapter.orders[first_order.exchange_order_id]["status"] = "closed"
+    adapter.orders[first_order.exchange_order_id]["filled"] = str(first_order.amount)
+    adapter.orders[first_order.exchange_order_id]["average"] = str(first_order.price)
 
     next_plan = opposite_plan(bot, first_order)
     assert next_plan is not None
