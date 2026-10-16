@@ -108,7 +108,7 @@ def test_duplicate_client_order_id_is_rejected():
 def test_recovery_uses_existing_order_and_does_not_resubmit():
     db = db_session()
     order = make_order(db)
-    db.commit()  # Mirrors API transaction 1: intent is durable before exchange I/O.
+    db.commit()
     adapter = FakeAdapter(existing={"id": "999", "status": "open", "filled": "0", "average": None})
     result = recover_or_submit(db, adapter, order)
     assert result.order.exchange_order_id == "999"
@@ -119,7 +119,7 @@ def test_recovery_uses_existing_order_and_does_not_resubmit():
 def test_unknown_lookup_error_fails_closed_without_resubmit():
     db = db_session()
     order = make_order(db)
-    db.commit()  # The intent must survive the failed/unknown exchange lookup.
+    db.commit()
     adapter = FakeAdapter(lookup_error=ccxt.NetworkError("timeout"))
     with pytest.raises(ccxt.NetworkError):
         recover_or_submit(db, adapter, order)
@@ -137,7 +137,7 @@ def test_order_status_mapping_accepts_binance_new():
     assert _map_status("closed") == OrderStatus.FILLED.value
 
 
-def test_reconcile_updates_status_and_fill_recording_is_idempotent():
+def test_reconcile_records_fills_and_is_idempotent():
     db = db_session()
     order = make_order(db)
     order.exchange_order_id = "123"
@@ -150,9 +150,29 @@ def test_reconcile_updates_status_and_fill_recording_is_idempotent():
     }]
     reconcile_order(db, adapter, order)
     assert order.status == OrderStatus.FILLED.value
-    assert record_fills(db, adapter, order) == 1
-    assert record_fills(db, adapter, order) == 0
+    assert order.filled_amount == D("0.01")
+    assert order.fee_quote == D("0.08")
     assert db.scalar(select(SpotFill).where(SpotFill.exchange_trade_id == "trade-1")).order_id == order.id
+    assert record_fills(db, adapter, order) == 0
+
+
+def test_reconcile_preserves_partial_fill_quantity():
+    db = db_session()
+    order = make_order(db)
+    order.exchange_order_id = "123"
+    order.status = OrderStatus.OPEN.value
+    db.commit()
+    adapter = FakeAdapter(existing={"id": "123", "status": "open", "filled": "0.004", "average": "79950"})
+    adapter.trades = [{
+        "id": "trade-partial", "order": "123", "amount": "0.004", "price": "79950",
+        "cost": "319.8", "fee": {"cost": "0.03", "currency": "USDT"},
+    }]
+    reconcile_order(db, adapter, order)
+    assert order.status == OrderStatus.OPEN.value
+    assert order.filled_amount == D("0.004")
+    assert order.amount - order.filled_amount == D("0.006")
+    fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
+    assert sum((fill.amount for fill in fills), D("0")) == D("0.004")
 
 
 def test_cancel_updates_local_state_and_is_single_exchange_call():
