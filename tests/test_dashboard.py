@@ -10,5 +10,5 @@ def test_healthz_is_public_and_execution_is_fail_closed():
 
 def test_dashboard_requires_authentication():
     response = TestClient(app).get('/', follow_redirects=False)
-    assert response.status_code == 307
+    assert response.status_code == 303
     assert response.headers['location'] == '/login'
