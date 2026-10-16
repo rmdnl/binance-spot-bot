@@ -108,6 +108,7 @@ def test_duplicate_client_order_id_is_rejected():
 def test_recovery_uses_existing_order_and_does_not_resubmit():
     db = db_session()
     order = make_order(db)
+    db.commit()  # Mirrors API transaction 1: intent is durable before exchange I/O.
     adapter = FakeAdapter(existing={"id": "999", "status": "open", "filled": "0", "average": None})
     result = recover_or_submit(db, adapter, order)
     assert result.order.exchange_order_id == "999"
@@ -118,12 +119,15 @@ def test_recovery_uses_existing_order_and_does_not_resubmit():
 def test_unknown_lookup_error_fails_closed_without_resubmit():
     db = db_session()
     order = make_order(db)
+    db.commit()  # The intent must survive the failed/unknown exchange lookup.
     adapter = FakeAdapter(lookup_error=ccxt.NetworkError("timeout"))
     with pytest.raises(ccxt.NetworkError):
         recover_or_submit(db, adapter, order)
     assert adapter.submissions == 0
     db.rollback()
-    assert db.get(SpotOrder, order.id).status == OrderStatus.NEW.value
+    persisted = db.get(SpotOrder, order.id)
+    assert persisted is not None
+    assert persisted.status == OrderStatus.NEW.value
 
 
 def test_order_status_mapping_accepts_binance_new():
