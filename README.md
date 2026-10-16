@@ -1,18 +1,19 @@
-# Binance Spot Terminal
+# Binance Spot Bot
 
-A self-hosted Binance Spot trading dashboard. The dashboard is the source of truth for trading configuration. `.env` contains credentials and environment secrets only.
+A self-hosted Binance Spot terminal for manual Spot trading and Grid trading.
 
 ## Scope
 
-- Binance Spot only. No futures, margin, leverage, or autonomous pair discovery.
-- Manual Spot trading: market, limit, and post-only limit orders.
-- Manual Grid Bot: arithmetic or geometric grids configured from the dashboard.
-- Portfolio, balances, realized PNL, unrealized PNL, fees, trades, and open orders.
-- Risk controls and a fail-closed execution boundary.
-- Testnet and Live credentials are isolated.
+- Binance Spot only: no futures, margin, leverage, autonomous pair discovery, or autonomous strategy selection.
+- Dashboard-managed trading parameters. `.env` contains credentials and server secrets only.
+- Manual Spot and Grid Bot are separate execution modes that will share order lifecycle, accounting, portfolio, and risk services.
+- Realized and unrealized PNL are shown separately, with quote-currency-aware accounting.
+- Testnet and Live API credentials are isolated; no automatic fallback between environments.
 - One `main` branch is the development/deployment path.
 
 ## Environment
+
+Copy `.env.example` to `.env` and configure:
 
 ```env
 BINANCE_TESTNET_API_KEY=
@@ -20,11 +21,28 @@ BINANCE_TESTNET_API_SECRET=
 BINANCE_LIVE_API_KEY=
 BINANCE_LIVE_API_SECRET=
 DASHBOARD_PASSWORD_HASH=
+DASHBOARD_SESSION_SECRET=
 DATABASE_URL=sqlite+aiosqlite:///./data/spot_terminal.db
+DASHBOARD_COOKIE_SECURE=true
 ```
 
-No trading parameters belong in `.env`. Pair, range, grid count, capital, fees, and risk limits are persisted from the dashboard.
+Generate the password hash with:
 
-## Safety
+```bash
+python scripts/create_admin_hash.py
+```
 
-Live trading is opt-in and fail-closed. The backend validates environment, credentials, market rules, balance, order feasibility, and risk before submission. Browser code never receives Binance API secrets.
+Use a password with at least 8 characters; a longer passphrase is recommended. Never commit `.env` or API credentials. Binance keys should have Spot trading permissions only when needed and withdrawals disabled.
+
+## Safety status
+
+The repository is an early foundation, **not production-ready and not authorized for Live trading**. Dashboard controls that are not implemented remain disabled. Before real orders are enabled, the project needs tested exchange rule validation, order preview, idempotent order submission/reconciliation, persistent fills and accounting, actual-balance checks, risk enforcement, live-mode confirmation, and testnet end-to-end validation.
+
+## Development
+
+```bash
+pip install -e '.[dev]'
+python -m compileall -q dca_bot
+pytest
+ruff check .
+```

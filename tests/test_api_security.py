@@ -1,38 +1,55 @@
 from fastapi.testclient import TestClient
+from itsdangerous import URLSafeTimedSerializer
 
-from dca_bot.main import app
-
-
-def test_market_ticker_api_requires_authentication():
-    response = TestClient(app).get("/api/market/ticker?symbol=BTCUSDT")
-    assert response.status_code == 401
+from dca_bot.main import app, csrf_serializer, session_serializer
 
 
-def test_dca_preview_api_requires_authentication():
-    response = TestClient(app).get("/api/dca/preview?base_price=100")
-    assert response.status_code == 401
+def test_dashboard_requires_signed_login():
+    client = TestClient(app)
+    response = client.get("/")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
 
 
-
-def test_paper_deals_api_requires_authentication():
-    response = TestClient(app).get("/api/paper/deals")
-    assert response.status_code == 401
-
-
-def test_paper_deal_start_api_requires_authentication():
-    response = TestClient(app).post(
-        "/api/paper/deals/start",
-        data={"csrf_token": "invalid", "strategy_id": "1", "symbol": "BTC/USDT"},
-    )
-    assert response.status_code == 401
+def test_static_authenticated_cookie_is_rejected():
+    client = TestClient(app)
+    client.cookies.set("dashboard_session", "authenticated")
+    response = client.get("/")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
 
 
+def test_login_page_sets_preauth_cookie_and_csrf():
+    client = TestClient(app)
+    response = client.get("/login")
+    assert response.status_code == 200
+    assert client.cookies.get("dashboard_preauth")
+    assert 'name="csrf_token"' in response.text
 
-def test_autonomous_strategy_analysis_api_requires_authentication():
-    response = TestClient(app).get("/api/strategy/analyze?symbol=BTCUSDT&timeframe=1h")
-    assert response.status_code == 401
+
+def test_logout_requires_signed_session_and_csrf():
+    client = TestClient(app)
+    response = client.post("/logout", data={"csrf_token": "invalid"})
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
 
 
-def test_paper_risk_status_api_requires_authentication():
-    response = TestClient(app).get("/api/risk/status")
-    assert response.status_code == 401
+def test_dashboard_accepts_a_valid_signed_session():
+    client = TestClient(app)
+    token = session_serializer.dumps({"authenticated": True, "nonce": "test"})
+    client.cookies.set("dashboard_session", token)
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "TRADING DISABLED" in response.text
+
+
+def test_csrf_token_is_bound_to_signed_session():
+    client = TestClient(app)
+    token = session_serializer.dumps({"authenticated": True, "nonce": "test"})
+    client.cookies.set("dashboard_session", token)
+    response = client.get("/")
+    assert response.status_code == 200
+    # A dashboard session cannot use a token generated for another session.
+    payload = csrf_serializer.dumps({"session": "not-this-session"})
+    response = client.post("/logout", data={"csrf_token": payload})
+    assert response.status_code == 403

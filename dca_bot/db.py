@@ -1,37 +1,47 @@
 from pathlib import Path
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from .config import get_settings
+
+from .config import Settings
 
 
 class Base(DeclarativeBase):
     pass
 
 
+settings = Settings()
+
+
+def _sync_database_url(url: str) -> str:
+    if url.startswith("sqlite+aiosqlite:///"):
+        url = "sqlite:///" + url.removeprefix("sqlite+aiosqlite:///")
+    return url
+
+
 def _prepare_sqlite_path(url: str) -> None:
-    prefix = 'sqlite:///'
-    if url.startswith(prefix) and url != 'sqlite:///:memory:':
-        file_path = url[len(prefix):]
-        if file_path and not file_path.startswith('/'):
-            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+    prefix = "sqlite:///"
+    if not url.startswith(prefix) or url == "sqlite:///:memory:":
+        return
+    raw_path = url[len(prefix):]
+    if not raw_path.startswith("/"):
+        target = (Path.cwd() / raw_path).resolve()
+    else:
+        target = Path(raw_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
 
 
-def build_engine():
-    settings = get_settings()
-    _prepare_sqlite_path(settings.database_url)
-    kwargs = {'check_same_thread': False} if settings.database_url.startswith('sqlite') else {}
-    return create_engine(settings.database_url, connect_args=kwargs, future=True)
-
-
-engine = build_engine()
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+_sync_url = _sync_database_url(settings.database_url)
+_prepare_sqlite_path(_sync_url)
+engine = create_engine(_sync_url, connect_args={"check_same_thread": False} if _sync_url.startswith("sqlite") else {})
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
 def init_db() -> None:
+    # Import models so metadata is complete before create_all.
     from . import models  # noqa: F401
+
     Base.metadata.create_all(bind=engine)
-    from .schema import migrate_schema
-    migrate_schema(engine)
 
 
 def get_db():
