@@ -22,8 +22,10 @@ class SubmitResult:
 
 
 def _client_id() -> str:
+    # Binance Spot clientOrderId is limited to 36 characters.
+    # Keep the format explicit: 5-char prefix + 31 hex characters = exactly 36.
     import secrets
-    return "spot-" + secrets.token_hex(15)
+    return "spot-" + secrets.token_hex(16)[:31]
 
 
 def create_intent(db: Session, request: OrderRequest) -> SpotOrder:
