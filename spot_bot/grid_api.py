@@ -6,9 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .grid_service import grid_open_order_ids, initial_grid_orders, pause_grid, start_grid, stop_grid
+from .exchange import BinanceSpot
+from .grid_engine import execute_initial_grid, pause_grid_execution, resume_grid_execution, stop_grid_execution
+from .grid_service import grid_open_order_ids, initial_grid_orders, start_grid
 from .main import auth, csrf_valid
-from .models import Environment, GridBot, GridConfig, GridStatus
+from .models import Environment, GridBot, GridConfig, GridLevel, GridStatus
 
 router = APIRouter(prefix="/api/grid", tags=["grid"])
 D = Decimal
@@ -28,6 +30,10 @@ def get_bot(db: Session, bot_id: int) -> GridBot:
         from fastapi import HTTPException
         raise HTTPException(404, "Grid bot not found")
     return bot
+
+
+def adapter_for(bot: GridBot) -> BinanceSpot:
+    return BinanceSpot(Environment(bot.environment))
 
 
 @router.post("/bots")
@@ -63,34 +69,47 @@ def start_grid_bot(request: Request, bot_id: int, csrf_token: str = Form(...), d
         bot = get_bot(db, bot_id)
         levels = start_grid(db, bot)
         db.commit()
+        results = execute_initial_grid(db, adapter_for(bot), bot)
     except ValueError as exc:
         db.rollback()
         return JSONResponse({"error": str(exc)}, 400)
-    return {"id": bot.id, "status": bot.status, "levels": len(levels), "open_orders": grid_open_order_ids(db, bot)}
+    return {"id": bot.id, "status": bot.status, "levels": len(levels), "submitted": len(results), "open_orders": grid_open_order_ids(db, bot)}
 
 
 @router.post("/bots/{bot_id}/pause")
 def pause_grid_bot(request: Request, bot_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db)):
     try:
         guard(request, csrf_token)
-        bot = pause_grid(db, get_bot(db, bot_id))
-        db.commit()
+        bot = get_bot(db, bot_id)
+        canceled = pause_grid_execution(db, adapter_for(bot), bot)
     except ValueError as exc:
         db.rollback()
         return JSONResponse({"error": str(exc)}, 400)
-    return {"id": bot.id, "status": bot.status}
+    return {"id": bot.id, "status": bot.status, "canceled": len(canceled), "open_orders": grid_open_order_ids(db, bot)}
+
+
+@router.post("/bots/{bot_id}/resume")
+def resume_grid_bot(request: Request, bot_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db)):
+    try:
+        guard(request, csrf_token)
+        bot = get_bot(db, bot_id)
+        results = resume_grid_execution(db, adapter_for(bot), bot)
+    except ValueError as exc:
+        db.rollback()
+        return JSONResponse({"error": str(exc)}, 400)
+    return {"id": bot.id, "status": bot.status, "submitted": len(results), "open_orders": grid_open_order_ids(db, bot)}
 
 
 @router.post("/bots/{bot_id}/stop")
 def stop_grid_bot(request: Request, bot_id: int, csrf_token: str = Form(...), db: Session = Depends(get_db)):
     try:
         guard(request, csrf_token)
-        bot = stop_grid(db, get_bot(db, bot_id))
-        db.commit()
+        bot = get_bot(db, bot_id)
+        canceled = stop_grid_execution(db, adapter_for(bot), bot)
     except ValueError as exc:
         db.rollback()
         return JSONResponse({"error": str(exc)}, 400)
-    return {"id": bot.id, "status": bot.status}
+    return {"id": bot.id, "status": bot.status, "canceled": len(canceled), "open_orders": grid_open_order_ids(db, bot)}
 
 
 @router.get("/bots/{bot_id}")
@@ -99,5 +118,5 @@ def grid_status(request: Request, bot_id: int, db: Session = Depends(get_db)):
         from fastapi import HTTPException
         raise HTTPException(401, "Authentication required")
     bot = get_bot(db, bot_id)
-    levels = db.scalars(select(__import__("spot_bot.models", fromlist=["GridLevel"]).GridLevel).where(__import__("spot_bot.models", fromlist=["GridLevel"]).GridLevel.bot_id == bot.id)).all()
+    levels = db.scalars(select(GridLevel).where(GridLevel.bot_id == bot.id)).all()
     return {"id": bot.id, "status": bot.status, "symbol": bot.symbol, "lower_price": str(bot.lower_price), "upper_price": str(bot.upper_price), "grids": bot.grids, "capital_quote": str(bot.capital_quote), "open_orders": grid_open_order_ids(db, bot), "levels": [{"index": x.level_index, "price": str(x.price), "buy_order_id": x.buy_order_id, "sell_order_id": x.sell_order_id} for x in levels]}
