@@ -137,6 +137,9 @@ class SpotFill(Base):
     inventory_application: Mapped["InventoryApplication | None"] = relationship(
         back_populates="fill", uselist=False, cascade="all, delete-orphan"
     )
+    realized_pnl_entry: Mapped["RealizedPNLEntry | None"] = relationship(
+        back_populates="fill", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class InventoryPosition(Base):
@@ -160,6 +163,21 @@ class InventoryApplication(Base):
     fill_id: Mapped[int] = mapped_column(ForeignKey("spot_fills.id"), unique=True, index=True)
     applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     fill: Mapped[SpotFill] = relationship(back_populates="inventory_application")
+
+
+class RealizedPNLEntry(Base):
+    __tablename__ = "realized_pnl_entries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    fill_id: Mapped[int] = mapped_column(ForeignKey("spot_fills.id"), unique=True, index=True)
+    environment: Mapped[str] = mapped_column(String(10), index=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    quantity: Mapped[D] = mapped_column(AccountingNumeric())
+    entry_cost: Mapped[D] = mapped_column(AccountingNumeric())
+    proceeds: Mapped[D] = mapped_column(AccountingNumeric())
+    fees: Mapped[D] = mapped_column(AccountingNumeric())
+    realized_pnl: Mapped[D] = mapped_column(AccountingNumeric())
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    fill: Mapped[SpotFill] = relationship(back_populates="realized_pnl_entry")
 
 
 class GridBot(Base):
