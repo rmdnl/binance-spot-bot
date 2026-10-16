@@ -165,11 +165,11 @@ def test_resume_does_not_recreate_filled_leg_and_reopens_canceled_leg():
 
     assert len(results) == 2
     assert len(adapter.submissions) == 4
-    assert results[0].order.side == OrderSide.BUY.value
+    assert results[0].order.side == OrderSide.SELL.value
     assert results[0].order.price == D("81000")
-    assert results[1].order.side == OrderSide.SELL.value
+    assert results[1].order.side == OrderSide.BUY.value
     assert results[1].order.price == D("81000")
-    assert results[1].order.amount == filled_order.amount
+    assert results[0].order.amount == filled_order.amount
 
 
 def test_resume_reopens_only_unfilled_remainder_of_partial_cancel():
