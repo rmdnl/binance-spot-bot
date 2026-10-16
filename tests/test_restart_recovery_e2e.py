@@ -5,18 +5,20 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from spot_bot.grid_engine import initial_order_plans, submit_grid_order
+from spot_bot.inventory_service import apply_fill
 from spot_bot.models import (
     Base,
     Environment,
     GridBot,
     GridLevel,
     InventoryApplication,
+    InventoryPosition,
     OrderStatus,
     RealizedPNLEntry,
     SpotFill,
     SpotOrder,
 )
-from spot_bot.order_service import recover_or_submit
+from spot_bot.order_service import recover_or_submit, record_fills
 
 
 class CrashAfterExchangeAdapter:
@@ -25,6 +27,7 @@ class CrashAfterExchangeAdapter:
         self.orders = {}
         self.recovery_lookups = 0
         self.crash_once = True
+        self.trades = []
 
     def validate_order(self, request):
         return None
@@ -52,7 +55,7 @@ class CrashAfterExchangeAdapter:
         raise ccxt.OrderNotFound("not found")
 
     def recent_trades(self, symbol, limit=100):
-        return []
+        return self.trades
 
 
 def db_session():
@@ -109,7 +112,7 @@ def test_restart_recovers_exchange_accepted_order_without_duplicate_submission()
     assert recovered.exchange is not None
     assert recovered.order.exchange_order_id == "exchange-1"
     assert len(adapter.submissions) == 1
-    assert adapter.recovery_lookups == 1
+    assert adapter.recovery_lookups == 2
 
 
 def test_restart_recovery_preserves_fill_accounting_when_exchange_order_already_exists():
@@ -126,6 +129,16 @@ def test_restart_recovery_preserves_fill_accounting_when_exchange_order_already_
         client_order_id="spot-restart-e2e-001",
     )
     db.add(order)
+    db.add(
+        InventoryPosition(
+            environment=Environment.TESTNET.value,
+            symbol="BTC/USDT",
+            base_asset="BTC",
+            quote_asset="USDT",
+            base_quantity=D("0"),
+            quote_cost=D("0"),
+        )
+    )
     db.commit()
     adapter.orders["exchange-1"] = {
         "id": "exchange-1",
@@ -134,18 +147,37 @@ def test_restart_recovery_preserves_fill_accounting_when_exchange_order_already_
         "average": "80000",
         "fee": {"cost": "0.08", "currency": "USDT"},
     }
+    adapter.trades = [
+        {
+            "id": "trade-restart-1",
+            "order": "exchange-1",
+            "amount": "0.01",
+            "price": "80000",
+            "cost": "800",
+            "fee": {"cost": "0.08", "currency": "USDT"},
+        }
+    ]
 
     recovered = recover_or_submit(db, adapter, order, post_only=True)
     db.commit()
     assert recovered.exchange is not None
+    assert recovered.order.status == OrderStatus.FILLED.value
 
     fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
-    assert len(fills) == 0
-
-    recovered_again = recover_or_submit(db, adapter, order, post_only=True)
+    assert len(fills) == 1
+    first = apply_fill(db, fills[0])
     db.commit()
-    assert recovered_again.exchange is not None
-    assert len(adapter.submissions) == 0
-    assert db.scalar(select(func.count()).select_from(SpotFill)) == 0
-    assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 0
+    assert first.applied is True
+    assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 1
     assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0
+
+    # Reconciliation after restart must see the same exchange trade but create no duplicate fill.
+    assert record_fills(db, adapter, order) == 0
+    db.commit()
+    assert db.scalar(select(func.count()).select_from(SpotFill)) == 1
+    assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 1
+    assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0
+    position = db.scalar(select(InventoryPosition).where(InventoryPosition.symbol == "BTC/USDT"))
+    assert position.base_quantity == D("0.010000000000")
+    assert position.quote_cost == D("800.080000000000")
+    assert len(adapter.submissions) == 0
