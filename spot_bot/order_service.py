@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+import ccxt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -37,14 +38,9 @@ def create_intent(db: Session, request: OrderRequest) -> SpotOrder:
     if duplicate:
         raise ValueError(f"client_order_id already exists for local order {duplicate.id}")
     order = SpotOrder(
-        environment=request.environment.value,
-        symbol=request.symbol.upper(),
-        side=request.side.value,
-        order_type=request.order_type.value,
-        status=OrderStatus.NEW.value,
-        amount=request.amount,
-        price=request.price,
-        client_order_id=client_id,
+        environment=request.environment.value, symbol=request.symbol.upper(), side=request.side.value,
+        order_type=request.order_type.value, status=OrderStatus.NEW.value, amount=request.amount,
+        price=request.price, client_order_id=client_id,
     )
     db.add(order)
     db.flush()
@@ -60,12 +56,8 @@ def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any]) -> None:
         order.average_price = D(str(avg))
     fee = raw.get("fee") or {}
     if fee.get("cost") is not None:
-        fee_currency = str(fee.get("currency") or "")
-        try:
-            quote = order.symbol.split("/")[1]
-        except IndexError:
-            quote = ""
-        if fee_currency == quote:
+        quote = order.symbol.split("/")[1]
+        if str(fee.get("currency") or "") == quote:
             order.fee_quote = D(str(fee["cost"]))
 
 
@@ -73,12 +65,11 @@ def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only:
     if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
     request = OrderRequest(
-        Environment(order.environment), order.symbol, OrderSide(order.side),
-        OrderType(order.order_type), order.amount, order.price, order.client_order_id,
+        Environment(order.environment), order.symbol, OrderSide(order.side), OrderType(order.order_type),
+        order.amount, order.price, order.client_order_id,
         post_only or order.order_type == OrderType.LIMIT_MAKER.value,
     )
     try:
-        # Validate before the network call. This is deliberately outside the DB transaction.
         adapter.validate_order(request)
         raw = adapter.create_order(request)
     except Exception as exc:
@@ -96,8 +87,11 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
     try:
         existing = adapter.fetch_order_by_client_id(order.symbol, order.client_order_id)
-    except Exception:
+    except ccxt.OrderNotFound:
         existing = None
+    except Exception:
+        # Unknown exchange/network errors are NOT treated as "not found". Never risk a duplicate order.
+        raise
     if existing:
         _apply_exchange_state(order, existing)
         db.flush()
@@ -107,11 +101,9 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
 
 def _map_status(status: str | None) -> str:
     return {
-        "open": OrderStatus.OPEN.value,
-        "closed": OrderStatus.FILLED.value,
-        "canceled": OrderStatus.CANCELED.value,
-        "expired": OrderStatus.EXPIRED.value,
-        "rejected": OrderStatus.REJECTED.value,
+        "new": OrderStatus.NEW.value, "open": OrderStatus.OPEN.value,
+        "closed": OrderStatus.FILLED.value, "canceled": OrderStatus.CANCELED.value,
+        "expired": OrderStatus.EXPIRED.value, "rejected": OrderStatus.REJECTED.value,
         "partially_filled": OrderStatus.PARTIALLY_FILLED.value,
     }.get((status or "").lower(), OrderStatus.UNKNOWN.value)
 
@@ -150,15 +142,13 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
         trade_id = str(trade.get("id")) if trade.get("id") is not None else None
         if trade_id and trade_id in existing:
             continue
-        amount = D(str(trade.get("amount") or "0"))
-        price = D(str(trade.get("price") or "0"))
+        amount, price = D(str(trade.get("amount") or "0")), D(str(trade.get("price") or "0"))
         if amount <= 0 or price <= 0:
             continue
-        cost = D(str(trade.get("cost") or amount * price))
         fee = trade.get("fee") or {}
         db.add(SpotFill(
-            order_id=order.id, symbol=order.symbol, side=order.side, price=price,
-            amount=amount, quote_amount=cost, fee=D(str(fee.get("cost") or "0")),
+            order_id=order.id, symbol=order.symbol, side=order.side, price=price, amount=amount,
+            quote_amount=D(str(trade.get("cost") or amount * price)), fee=D(str(fee.get("cost") or "0")),
             fee_currency=str(fee.get("currency") or ""), exchange_trade_id=trade_id,
         ))
         if trade_id:
