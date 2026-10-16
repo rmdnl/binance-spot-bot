@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .exchange import BinanceSpot, ExchangeSafetyError
+from .exchange import BinanceSpot
 from .models import Environment, OrderRequest, OrderSide, OrderStatus, OrderType, SpotFill, SpotOrder
 
 D = Decimal
+ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
 
 
 @dataclass(frozen=True)
@@ -32,9 +33,12 @@ def create_intent(db: Session, request: OrderRequest) -> SpotOrder:
     client_id = request.client_order_id or _client_id()
     if len(client_id) > 36:
         raise ValueError("client_order_id exceeds Binance 36 character limit")
+    duplicate = db.scalar(select(SpotOrder).where(SpotOrder.client_order_id == client_id))
+    if duplicate:
+        raise ValueError(f"client_order_id already exists for local order {duplicate.id}")
     order = SpotOrder(
         environment=request.environment.value,
-        symbol=request.symbol,
+        symbol=request.symbol.upper(),
         side=request.side.value,
         order_type=request.order_type.value,
         status=OrderStatus.NEW.value,
@@ -47,33 +51,58 @@ def create_intent(db: Session, request: OrderRequest) -> SpotOrder:
     return order
 
 
+def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any]) -> None:
+    order.exchange_order_id = str(raw.get("id")) if raw.get("id") is not None else order.exchange_order_id
+    order.status = _map_status(raw.get("status"))
+    order.filled_amount = D(str(raw.get("filled") or "0"))
+    avg = raw.get("average")
+    if avg is not None:
+        order.average_price = D(str(avg))
+    fee = raw.get("fee") or {}
+    if fee.get("cost") is not None:
+        fee_currency = str(fee.get("currency") or "")
+        try:
+            quote = order.symbol.split("/")[1]
+        except IndexError:
+            quote = ""
+        if fee_currency == quote:
+            order.fee_quote = D(str(fee["cost"]))
+
+
 def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False) -> SubmitResult:
     if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
     request = OrderRequest(
-        environment=Environment(order.environment),
-        symbol=order.symbol,
-        side=OrderSide(order.side),
-        order_type=OrderType(order.order_type),
-        amount=order.amount,
-        price=order.price,
-        client_order_id=order.client_order_id,
-        post_only=post_only or order.order_type == OrderType.LIMIT_MAKER.value,
+        Environment(order.environment), order.symbol, OrderSide(order.side),
+        OrderType(order.order_type), order.amount, order.price, order.client_order_id,
+        post_only or order.order_type == OrderType.LIMIT_MAKER.value,
     )
     try:
+        # Validate before the network call. This is deliberately outside the DB transaction.
+        adapter.validate_order(request)
         raw = adapter.create_order(request)
     except Exception as exc:
         order.status = OrderStatus.REJECTED.value
         order.error_message = str(exc)[:500]
         db.flush()
         raise
-    order.exchange_order_id = str(raw.get("id")) if raw.get("id") is not None else None
-    order.status = _map_status(raw.get("status"))
-    order.filled_amount = D(str(raw.get("filled") or "0"))
-    avg = raw.get("average")
-    order.average_price = D(str(avg)) if avg is not None else None
+    _apply_exchange_state(order, raw)
     db.flush()
     return SubmitResult(order, raw)
+
+
+def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False) -> SubmitResult:
+    if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
+        raise ValueError(f"order {order.id} is not submittable from {order.status}")
+    try:
+        existing = adapter.fetch_order_by_client_id(order.symbol, order.client_order_id)
+    except Exception:
+        existing = None
+    if existing:
+        _apply_exchange_state(order, existing)
+        db.flush()
+        return SubmitResult(order, existing)
+    return submit_order(db, adapter, order, post_only)
 
 
 def _map_status(status: str | None) -> str:
@@ -83,28 +112,36 @@ def _map_status(status: str | None) -> str:
         "canceled": OrderStatus.CANCELED.value,
         "expired": OrderStatus.EXPIRED.value,
         "rejected": OrderStatus.REJECTED.value,
+        "partially_filled": OrderStatus.PARTIALLY_FILLED.value,
     }.get((status or "").lower(), OrderStatus.UNKNOWN.value)
 
 
 def reconcile_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrder:
+    if order.status not in ACTIVE:
+        return order
+    raw = adapter.fetch_order(order.exchange_order_id, order.symbol) if order.exchange_order_id else adapter.fetch_order_by_client_id(order.symbol, order.client_order_id)
+    _apply_exchange_state(order, raw)
+    db.flush()
+    return order
+
+
+def cancel_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrder:
+    if order.status not in ACTIVE:
+        raise ValueError(f"order {order.id} cannot be canceled from {order.status}")
     if not order.exchange_order_id:
-        raise ValueError("cannot reconcile order without exchange_order_id")
-    raw = adapter.exchange.fetch_order(order.exchange_order_id, order.symbol)
-    order.status = _map_status(raw.get("status"))
-    order.filled_amount = D(str(raw.get("filled") or "0"))
-    avg = raw.get("average")
-    order.average_price = D(str(avg)) if avg is not None else order.average_price
-    fee = raw.get("fee") or {}
-    if fee.get("currency") == adapter.market(order.symbol).get("quote") and fee.get("cost") is not None:
-        order.fee_quote = D(str(fee["cost"]))
+        raise ValueError("cannot cancel order without exchange_order_id")
+    raw = adapter.cancel_order(order.exchange_order_id, order.symbol)
+    _apply_exchange_state(order, raw)
+    if order.status not in {OrderStatus.CANCELED.value, OrderStatus.FILLED.value, OrderStatus.EXPIRED.value}:
+        order.status = OrderStatus.CANCELED.value
     db.flush()
     return order
 
 
 def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
     if not order.exchange_order_id:
-        raise ValueError("cannot fetch fills without exchange_order_id")
-    trades = adapter.exchange.fetch_my_trades(order.symbol, limit=100)
+        return 0
+    trades = adapter.recent_trades(order.symbol, limit=100)
     existing = set(db.scalars(select(SpotFill.exchange_trade_id).where(SpotFill.order_id == order.id)).all())
     count = 0
     for trade in trades:
@@ -113,12 +150,19 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
         trade_id = str(trade.get("id")) if trade.get("id") is not None else None
         if trade_id and trade_id in existing:
             continue
-        amount = D(str(trade.get("amount") or "0")); price = D(str(trade.get("price") or "0"))
+        amount = D(str(trade.get("amount") or "0"))
+        price = D(str(trade.get("price") or "0"))
         if amount <= 0 or price <= 0:
             continue
         cost = D(str(trade.get("cost") or amount * price))
         fee = trade.get("fee") or {}
-        fill = SpotFill(order_id=order.id, symbol=order.symbol, side=order.side, price=price, amount=amount, quote_amount=cost, fee=D(str(fee.get("cost") or "0")), fee_currency=str(fee.get("currency") or ""), exchange_trade_id=trade_id)
-        db.add(fill); count += 1
+        db.add(SpotFill(
+            order_id=order.id, symbol=order.symbol, side=order.side, price=price,
+            amount=amount, quote_amount=cost, fee=D(str(fee.get("cost") or "0")),
+            fee_currency=str(fee.get("currency") or ""), exchange_trade_id=trade_id,
+        ))
+        if trade_id:
+            existing.add(trade_id)
+        count += 1
     db.flush()
     return count
