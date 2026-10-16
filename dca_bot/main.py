@@ -14,7 +14,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from passlib.context import CryptContext
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import Settings
 from .db import init_db
@@ -30,7 +29,6 @@ pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 session_serializer = URLSafeTimedSerializer(settings.dashboard_session_secret, salt="spot-dashboard-session-v1")
 csrf_serializer = URLSafeTimedSerializer(settings.dashboard_session_secret, salt="spot-dashboard-csrf-v1")
 
-# Small single-process limiter. For multi-worker deployments, replace this with a shared store.
 _attempts: dict[str, deque[float]] = defaultdict(deque)
 _attempts_lock = Lock()
 _LOGIN_WINDOW = settings.dashboard_login_window_seconds
@@ -38,13 +36,11 @@ _MAX_ATTEMPTS = settings.dashboard_login_max_attempts
 
 
 def client_key(request: Request) -> str:
-    # Do not trust X-Forwarded-For unless a trusted proxy middleware is explicitly configured.
     return request.client.host if request.client else "unknown"
 
 
 def login_limited(request: Request) -> bool:
-    now = time.monotonic()
-    key = client_key(request)
+    now, key = time.monotonic(), client_key(request)
     with _attempts_lock:
         attempts = _attempts[key]
         while attempts and now - attempts[0] > _LOGIN_WINDOW:
@@ -53,19 +49,13 @@ def login_limited(request: Request) -> bool:
 
 
 def record_failed_login(request: Request) -> None:
-    now = time.monotonic()
     with _attempts_lock:
-        attempts = _attempts[client_key(request)]
-        attempts.append(now)
+        _attempts[client_key(request)].append(time.monotonic())
 
 
 def clear_failed_logins(request: Request) -> None:
     with _attempts_lock:
         _attempts.pop(client_key(request), None)
-
-
-def new_csrf_token() -> str:
-    return secrets.token_urlsafe(32)
 
 
 def csrf_valid(token: str, request: Request) -> bool:
@@ -74,11 +64,11 @@ def csrf_valid(token: str, request: Request) -> bool:
     except (BadSignature, SignatureExpired):
         return False
     session = request.cookies.get("dashboard_session", "")
-    if not session:
-        # Login CSRF tokens are bound to a short-lived pre-authentication cookie.
-        preauth = request.cookies.get("dashboard_preauth", "")
-        return bool(preauth) and hmac.compare_digest(payload.get("nonce", ""), preauth)
-    return hmac.compare_digest(payload.get("session", ""), hashlib.sha256(session.encode()).hexdigest())
+    if session:
+        expected = hashlib.sha256(session.encode()).hexdigest()
+        return hmac.compare_digest(payload.get("session", ""), expected)
+    preauth = request.cookies.get("dashboard_preauth", "")
+    return bool(preauth) and hmac.compare_digest(payload.get("nonce", ""), preauth)
 
 
 def require_auth(request: Request) -> bool:
@@ -97,8 +87,7 @@ def csrf_for_request(request: Request) -> str:
     if session:
         payload = {"session": hashlib.sha256(session.encode()).hexdigest()}
     else:
-        nonce = request.cookies.get("dashboard_preauth", "")
-        payload = {"nonce": nonce}
+        payload = {"nonce": request.cookies.get("dashboard_preauth", "")}
     return csrf_serializer.dumps(payload)
 
 
@@ -114,21 +103,16 @@ def healthz() -> dict[str, str]:
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
+    preauth = request.cookies.get("dashboard_preauth") or secrets.token_urlsafe(32)
+    # Token is bound to the cookie value sent in the same response.
     response = templates.TemplateResponse(
-        request,
-        "login.html",
-        {"error": None, "csrf_token": csrf_for_request(request)},
+        request, "login.html",
+        {"error": None, "csrf_token": csrf_serializer.dumps({"nonce": preauth})},
     )
-    if not request.cookies.get("dashboard_preauth"):
-        response.set_cookie(
-            "dashboard_preauth",
-            secrets.token_urlsafe(32),
-            httponly=True,
-            secure=settings.dashboard_cookie_secure,
-            samesite="strict",
-            max_age=900,
-            path="/",
-        )
+    response.set_cookie(
+        "dashboard_preauth", preauth, httponly=True,
+        secure=settings.dashboard_cookie_secure, samesite="strict", max_age=900, path="/",
+    )
     return response
 
 
@@ -137,21 +121,21 @@ def login(request: Request, password: str = Form(...), csrf_token: str = Form(..
     if login_limited(request):
         response = templates.TemplateResponse(
             request, "login.html",
-            {"error": "Terlalu banyak percobaan login. Coba lagi beberapa menit lagi.", "csrf_token": csrf_for_request(request)},
+            {"error": "Terlalu banyak percobaan login. Coba lagi beberapa menit lagi.", "csrf_token": ""},
             status_code=429,
         )
         return response
     if not csrf_valid(csrf_token, request):
         return templates.TemplateResponse(
             request, "login.html",
-            {"error": "Sesi form tidak valid. Muat ulang halaman login.", "csrf_token": csrf_for_request(request)},
+            {"error": "Sesi form tidak valid. Muat ulang halaman login.", "csrf_token": ""},
             status_code=403,
         )
     if len(password) < settings.dashboard_min_password_length:
         record_failed_login(request)
         return templates.TemplateResponse(
             request, "login.html",
-            {"error": "Password minimal 8 karakter.", "csrf_token": csrf_for_request(request)},
+            {"error": "Password minimal 8 karakter.", "csrf_token": ""},
             status_code=400,
         )
     try:
@@ -162,20 +146,16 @@ def login(request: Request, password: str = Form(...), csrf_token: str = Form(..
         record_failed_login(request)
         return templates.TemplateResponse(
             request, "login.html",
-            {"error": "Password salah.", "csrf_token": csrf_for_request(request)},
+            {"error": "Password salah.", "csrf_token": ""},
             status_code=401,
         )
     clear_failed_logins(request)
     response = RedirectResponse("/", status_code=303)
     session = session_serializer.dumps({"authenticated": True, "nonce": secrets.token_urlsafe(24)})
     response.set_cookie(
-        "dashboard_session",
-        session,
-        httponly=True,
-        secure=settings.dashboard_cookie_secure,
-        samesite="strict",
-        max_age=settings.dashboard_session_max_age_seconds,
-        path="/",
+        "dashboard_session", session, httponly=True,
+        secure=settings.dashboard_cookie_secure, samesite="strict",
+        max_age=settings.dashboard_session_max_age_seconds, path="/",
     )
     response.delete_cookie("dashboard_preauth", path="/")
     return response
@@ -186,8 +166,7 @@ def dashboard(request: Request):
     if not require_auth(request):
         return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(
-        request,
-        "dashboard.html",
+        request, "dashboard.html",
         {"csrf_token": csrf_for_request(request), "environment": "NOT CONNECTED"},
     )
 
