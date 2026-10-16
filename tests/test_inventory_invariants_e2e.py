@@ -73,7 +73,7 @@ def test_repeated_apply_fill_is_idempotent_and_preserves_inventory_invariant():
     db.commit()
 
     buy = make_fill(db, "buy", "0.01", "80000", trade_id="buy-1")
-    first = apply_fill(db, buy)
+    apply_fill(db, buy)
     db.commit()
     snapshot = counts(db), position.base_quantity, position.quote_cost
 
