@@ -170,11 +170,13 @@ def test_execute_initial_grid_respects_max_open_orders():
     bot = GridBot(
         environment="testnet", symbol="BTC/USDT", grid_type="arithmetic",
         lower_price=D("80000"), upper_price=D("90000"), grids=11,
-        capital_quote=D("500"), max_open_orders=3, status=GridStatus.RUNNING.value,
+        capital_quote=D("500"), max_open_orders=3,
     )
     db.add(bot)
     db.flush()
     materialize_levels(db, bot)
+    start_grid(db, bot)
+    db.commit()
     adapter = FakeGridAdapter()
 
     results = execute_initial_grid(db, adapter, bot)
