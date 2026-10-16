@@ -25,10 +25,10 @@ def test_halt_wins_when_order_admission_runs_after_halt_commit():
         evaluate_drawdown(db, D("970"), D("1000"), D("0.02"))
         db.commit()
 
-    with Session(engine) as db:
-        with pytest.raises(RuntimeError, match="risk halt active"):
-            create_intent(db, request())
+    with Session(engine) as db, pytest.raises(RuntimeError, match="risk halt active"):
+        create_intent(db, request())
         db.rollback()
+    with Session(engine) as db:
         assert db.scalar(select(SpotOrder).where(SpotOrder.client_order_id == "race-order")) is None
         assert db.get(RiskState, 1).halted is True
 
@@ -56,6 +56,5 @@ def test_halted_state_survives_new_session_and_blocks_admission():
         evaluate_drawdown(db, D("970"), D("1000"), D("0.02"))
         db.commit()
 
-    with Session(engine) as db:
-        with pytest.raises(RuntimeError, match="risk halt active"):
-            create_intent(db, request())
+    with Session(engine) as db, pytest.raises(RuntimeError, match="risk halt active"):
+        create_intent(db, request())
