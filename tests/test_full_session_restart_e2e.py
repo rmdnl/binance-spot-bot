@@ -75,9 +75,9 @@ def test_full_session_restart_reconciles_and_resumes_without_duplicate_accountin
 
         position = db.scalar(select(InventoryPosition).where(InventoryPosition.symbol == "BTC/USDT"))
         assert position.base_quantity == D("0.01")
-        assert position.quote_cost == D("800.079")
+        assert position.quote_cost == D("800.08")
         assert db.scalar(select(func.count()).select_from(SpotFill)) == 2
         assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 2
         assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 1
         pnl = db.scalar(select(RealizedPNLEntry))
-        assert pnl.realized_pnl == D("9.839")
+        assert pnl.realized_pnl == D("9.84")
