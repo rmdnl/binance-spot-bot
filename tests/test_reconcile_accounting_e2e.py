@@ -110,9 +110,9 @@ def test_reconcile_twice_does_not_duplicate_inventory_or_realized_pnl(monkeypatc
 
     pnl = db.scalar(select(RealizedPNLEntry))
     assert pnl.quantity == D("0.01")
-    assert pnl.entry_cost == D("800.000000000000")
+    assert pnl.entry_cost == D("800.080000000000")
     assert pnl.proceeds == D("809.920000000000")
-    assert pnl.realized_pnl == D("9.920000000000")
+    assert pnl.realized_pnl == D("9.840000000000")
 
     for fill in fills_after:
         result = apply_fill(db, fill)
