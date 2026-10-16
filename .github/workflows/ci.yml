@@ -17,6 +17,6 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: pip install -e '.[dev]'
-      - run: python -m compileall -q dca_bot
+      - run: python -m compileall -q spot_bot
       - run: pytest
       - run: ruff check .
