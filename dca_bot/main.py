@@ -20,19 +20,17 @@ from .db import init_db
 
 BASE_DIR = Path(__file__).resolve().parent
 settings = Settings()
-settings.validate_dashboard_security()
-
+# App import and public health checks must remain possible before an operator configures secrets.
+# Any privileged dashboard view/login is denied until proper secrets are configured.
 app = FastAPI(title="Binance Spot Bot", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-session_serializer = URLSafeTimedSerializer(settings.dashboard_session_secret, salt="spot-dashboard-session-v1")
-csrf_serializer = URLSafeTimedSerializer(settings.dashboard_session_secret, salt="spot-dashboard-csrf-v1")
+session_serializer = URLSafeTimedSerializer(settings.dashboard_session_secret or "unconfigured-session-secret-deny-all", salt="spot-dashboard-session-v1")
+csrf_serializer = URLSafeTimedSerializer(settings.dashboard_session_secret or "unconfigured-session-secret-deny-all", salt="spot-dashboard-csrf-v1")
 
 _attempts: dict[str, deque[float]] = defaultdict(deque)
 _attempts_lock = Lock()
-_LOGIN_WINDOW = settings.dashboard_login_window_seconds
-_MAX_ATTEMPTS = settings.dashboard_login_max_attempts
 
 
 def client_key(request: Request) -> str:
@@ -43,9 +41,9 @@ def login_limited(request: Request) -> bool:
     now, key = time.monotonic(), client_key(request)
     with _attempts_lock:
         attempts = _attempts[key]
-        while attempts and now - attempts[0] > _LOGIN_WINDOW:
+        while attempts and now - attempts[0] > settings.dashboard_login_window_seconds:
             attempts.popleft()
-        return len(attempts) >= _MAX_ATTEMPTS
+        return len(attempts) >= settings.dashboard_login_max_attempts
 
 
 def record_failed_login(request: Request) -> None:
@@ -56,6 +54,10 @@ def record_failed_login(request: Request) -> None:
 def clear_failed_logins(request: Request) -> None:
     with _attempts_lock:
         _attempts.pop(client_key(request), None)
+
+
+def security_configured() -> bool:
+    return bool(settings.dashboard_password_hash.strip() and len(settings.dashboard_session_secret) >= 32)
 
 
 def csrf_valid(token: str, request: Request) -> bool:
@@ -72,6 +74,8 @@ def csrf_valid(token: str, request: Request) -> bool:
 
 
 def require_auth(request: Request) -> bool:
+    if not security_configured():
+        return False
     token = request.cookies.get("dashboard_session", "")
     if not token:
         return False
@@ -104,7 +108,6 @@ def healthz() -> dict[str, str]:
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     preauth = request.cookies.get("dashboard_preauth") or secrets.token_urlsafe(32)
-    # Token is bound to the cookie value sent in the same response.
     response = templates.TemplateResponse(
         request, "login.html",
         {"error": None, "csrf_token": csrf_serializer.dumps({"nonce": preauth})},
@@ -118,13 +121,18 @@ def login_page(request: Request):
 
 @app.post("/login", response_class=HTMLResponse)
 def login(request: Request, password: str = Form(...), csrf_token: str = Form(...)):
+    if not security_configured():
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"error": "Dashboard belum dikonfigurasi. Set DASHBOARD_PASSWORD_HASH dan DASHBOARD_SESSION_SECRET.", "csrf_token": ""},
+            status_code=503,
+        )
     if login_limited(request):
-        response = templates.TemplateResponse(
+        return templates.TemplateResponse(
             request, "login.html",
             {"error": "Terlalu banyak percobaan login. Coba lagi beberapa menit lagi.", "csrf_token": ""},
             status_code=429,
         )
-        return response
     if not csrf_valid(csrf_token, request):
         return templates.TemplateResponse(
             request, "login.html",

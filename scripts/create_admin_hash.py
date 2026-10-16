@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+import os
 from getpass import getpass
 
 from passlib.context import CryptContext
@@ -13,7 +13,8 @@ def main() -> None:
     confirmation = getpass("Confirm password: ")
     if password != confirmation:
         raise SystemExit("Passwords do not match.")
-    print(PASSWORD_CONTEXT.hash(password))
+    os.environ["DASHBOARD_PASSWORD_HASH"] = PASSWORD_CONTEXT.hash(password)
+    print(os.environ["DASHBOARD_PASSWORD_HASH"])
 
 
 if __name__ == "__main__":
