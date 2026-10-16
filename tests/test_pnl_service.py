@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from decimal import Decimal as D
 
 import pytest
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from spot_bot.models import Base, Environment, InventoryPosition, RealizedPNLEntry, SpotFill, SpotOrder
@@ -77,7 +77,7 @@ def test_realized_pnl_records_weighted_cost_and_is_idempotent(db):
     assert first.proceeds == D("83.916000000000")
     assert first.fees == D("0.084000000000")
     assert first.realized_pnl == D("2.835000000000")
-    assert db.scalar(func.count()).select_from(RealizedPNLEntry) == 1
+    assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 1
 
 
 def test_realized_pnl_rejects_non_sell(db):
