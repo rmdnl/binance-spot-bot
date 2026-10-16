@@ -113,15 +113,11 @@ def test_filled_buy_advances_to_next_sell_level():
     adapter.orders[first_order.exchange_order_id]["filled"] = str(first_order.amount)
     adapter.orders[first_order.exchange_order_id]["average"] = str(first_order.price)
 
-    next_plan = opposite_plan(bot, first_order)
-    assert next_plan is not None
-    assert next_plan.side == OrderSide.SELL
-    assert next_plan.level_index == 1
-
     result = advance_after_fill(db, adapter, bot, first_order.id)
     assert result is not None
     assert result.order.side == OrderSide.SELL.value
     assert result.order.price == D("81000")
+    assert result.order.amount == first_order.amount
     assert len(adapter.submissions) == 2
 
 
