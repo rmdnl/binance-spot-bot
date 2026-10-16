@@ -163,5 +163,15 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
         ))
         existing.add(trade_id)
         count += 1
+
     db.flush()
+
+    # The fill ledger is the canonical source for quote-denominated fees.
+    # Preserve an exchange-level quote fee only when no fill rows exist yet.
+    quote = order.symbol.split("/")[1]
+    fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
+    quote_fee = sum((fill.fee for fill in fills if fill.fee_currency == quote), D("0"))
+    if fills:
+        order.fee_quote = quote_fee
+
     return count
