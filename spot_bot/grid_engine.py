@@ -14,11 +14,6 @@ from .order_service import SubmitResult, cancel_order, create_intent, record_fil
 D = Decimal
 ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
 TERMINAL_FILLED = {OrderStatus.FILLED.value}
-RECREATABLE = {
-    OrderStatus.CANCELED.value,
-    OrderStatus.EXPIRED.value,
-    OrderStatus.REJECTED.value,
-}
 
 
 @dataclass(frozen=True)
@@ -48,14 +43,7 @@ def initial_order_plans(bot: GridBot, current_price: D) -> list[GridOrderPlan]:
     if current_price <= 0:
         raise ValueError("current price must be positive")
     levels = sorted(bot.levels, key=lambda item: item.level_index)
-    plans: list[GridOrderPlan] = []
-    for level in levels:
-        if level.price >= current_price:
-            continue
-        linked = level.buy_order_id
-        if linked is not None:
-            order = next((item for item in bot.levels[0].__class__.__mro__ if False), None)
-        plans.append(plan_order(bot, level, OrderSide.BUY))
+    plans = [plan_order(bot, level, OrderSide.BUY) for level in levels if level.price < current_price]
     return plans[: bot.max_open_orders]
 
 
@@ -175,7 +163,7 @@ def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> li
     for level in levels:
         for side in (OrderSide.BUY, OrderSide.SELL):
             existing = _linked_order(level, side, db)
-            if existing is None or existing.status not in TERMINAL_FILLED:
+            if existing is None or existing.status != OrderStatus.FILLED.value:
                 continue
             plan = opposite_plan(bot, existing)
             if plan is None:
@@ -222,6 +210,17 @@ def execute_initial_grid(db: Session, adapter: BinanceSpot, bot: GridBot) -> lis
         raise ValueError("exchange ticker has no usable price")
     results: list[SubmitResult] = []
     for plan in initial_order_plans(bot, current):
+        level = db.scalar(
+            select(GridLevel).where(
+                GridLevel.bot_id == bot.id,
+                GridLevel.level_index == plan.level_index,
+            )
+        )
+        if level is None:
+            continue
+        existing = _linked_order(level, plan.side, db)
+        if existing is not None and existing.status == OrderStatus.FILLED.value:
+            continue
         try:
             results.append(submit_grid_order(db, adapter, bot, plan))
         except ValueError as exc:
