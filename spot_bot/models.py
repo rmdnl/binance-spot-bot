@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import DateTime, Numeric, String, Integer, Boolean, ForeignKey, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 D = Decimal
@@ -65,6 +65,19 @@ class OrderRequest:
     price: D | None = None
     client_order_id: str | None = None
     post_only: bool = False
+
+
+@dataclass(frozen=True)
+class GridConfig:
+    symbol: str
+    lower_price: D
+    upper_price: D
+    grids: int
+    capital: D
+    grid_type: str = "arithmetic"
+    max_open_orders: int = 20
+    stop_loss_price: D | None = None
+    stop_loss_enabled: bool = False
 
 
 class SpotOrder(Base):
