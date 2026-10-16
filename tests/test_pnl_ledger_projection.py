@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from decimal import Decimal as D
 
 from sqlalchemy import create_engine
@@ -33,6 +34,7 @@ def test_pnl_reads_persisted_inventory_and_realized_ledger():
             proceeds=D("5500"),
             fees=D("5"),
             realized_pnl=D("495"),
+            timestamp=datetime.now(UTC),
         ))
         db.commit()
 
