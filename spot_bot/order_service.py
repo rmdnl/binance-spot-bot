@@ -12,6 +12,7 @@ from .exchange import BinanceSpot
 from .models import Environment, OrderRequest, OrderSide, OrderStatus, OrderType, SpotFill, SpotOrder
 
 D = Decimal
+FEE_SCALE = D("0.00000001")
 ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
 
 
@@ -60,7 +61,7 @@ def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any]) -> None:
     if fee.get("cost") is not None:
         quote = order.symbol.split("/")[1]
         if str(fee.get("currency") or "") == quote:
-            order.fee_quote = D(str(fee["cost"]))
+            order.fee_quote = D(str(fee["cost"])).quantize(FEE_SCALE)
 
 
 def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False) -> SubmitResult:
@@ -167,11 +168,10 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
     db.flush()
 
     # The fill ledger is the canonical source for quote-denominated fees.
-    # Preserve an exchange-level quote fee only when no fill rows exist yet.
     quote = order.symbol.split("/")[1]
     fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
-    quote_fee = sum((fill.fee for fill in fills if fill.fee_currency == quote), D("0"))
+    quote_fee = sum((D(str(fill.fee)).quantize(FEE_SCALE) for fill in fills if fill.fee_currency == quote), D("0"))
     if fills:
-        order.fee_quote = quote_fee
+        order.fee_quote = quote_fee.quantize(FEE_SCALE)
 
     return count
