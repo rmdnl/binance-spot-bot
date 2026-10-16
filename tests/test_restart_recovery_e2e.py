@@ -5,7 +5,17 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from spot_bot.grid_engine import initial_order_plans, submit_grid_order
-from spot_bot.models import Base, Environment, GridBot, GridLevel, InventoryApplication, OrderStatus, RealizedPNLEntry, SpotFill, SpotOrder
+from spot_bot.models import (
+    Base,
+    Environment,
+    GridBot,
+    GridLevel,
+    InventoryApplication,
+    OrderStatus,
+    RealizedPNLEntry,
+    SpotFill,
+    SpotOrder,
+)
 from spot_bot.order_service import recover_or_submit
 
 
@@ -17,11 +27,17 @@ class CrashAfterExchangeAdapter:
         self.crash_once = True
 
     def validate_order(self, request):
-        pass
+        return None
 
     def create_order(self, request):
         order_id = f"exchange-{len(self.submissions) + 1}"
-        raw = {"id": order_id, "status": "open", "filled": "0", "average": None, "fee": {"cost": "0", "currency": "USDT"}}
+        raw = {
+            "id": order_id,
+            "status": "open",
+            "filled": "0",
+            "average": None,
+            "fee": {"cost": "0", "currency": "USDT"},
+        }
         self.submissions.append(request)
         self.orders[order_id] = raw
         if self.crash_once:
@@ -46,11 +62,27 @@ def db_session():
 
 
 def make_bot(db):
-    bot = GridBot(environment="testnet", symbol="BTC/USDT", grid_type="arithmetic", lower_price=D("80000"), upper_price=D("90000"), grids=11, capital_quote=D("500"), max_open_orders=1, status="running")
+    bot = GridBot(
+        environment="testnet",
+        symbol="BTC/USDT",
+        grid_type="arithmetic",
+        lower_price=D("80000"),
+        upper_price=D("90000"),
+        grids=11,
+        capital_quote=D("500"),
+        max_open_orders=1,
+        status="running",
+    )
     db.add(bot)
     db.flush()
     for index in range(11):
-        db.add(GridLevel(bot_id=bot.id, level_index=index, price=D(80000 + index * 1000))
+        db.add(
+            GridLevel(
+                bot_id=bot.id,
+                level_index=index,
+                price=D(80000 + index * 1000),
+            )
+        )
     db.commit()
     return bot
 
@@ -95,7 +127,13 @@ def test_restart_recovery_preserves_fill_accounting_when_exchange_order_already_
     )
     db.add(order)
     db.commit()
-    adapter.orders["exchange-1"] = {"id": "exchange-1", "status": "closed", "filled": "0.01", "average": "80000", "fee": {"cost": "0.08", "currency": "USDT"}}
+    adapter.orders["exchange-1"] = {
+        "id": "exchange-1",
+        "status": "closed",
+        "filled": "0.01",
+        "average": "80000",
+        "fee": {"cost": "0.08", "currency": "USDT"},
+    }
 
     recovered = recover_or_submit(db, adapter, order, post_only=True)
     db.commit()
@@ -104,7 +142,6 @@ def test_restart_recovery_preserves_fill_accounting_when_exchange_order_already_
     fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
     assert len(fills) == 0
 
-    # A second recovery must not submit or create a second order intent.
     recovered_again = recover_or_submit(db, adapter, order, post_only=True)
     db.commit()
     assert recovered_again.exchange is not None
