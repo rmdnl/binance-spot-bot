@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .models import InventoryApplication, InventoryPosition, RealizedPNLEntry, SpotFill
@@ -70,15 +71,32 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
         raise ValueError("fill fee cannot be negative")
 
     position = _position(db, fill)
-    if db.scalar(select(InventoryApplication).where(InventoryApplication.fill_id == fill.id)) is not None:
+    existing = db.scalar(select(InventoryApplication).where(InventoryApplication.fill_id == fill.id))
+    if existing is not None:
         existing_pnl = db.scalar(select(RealizedPNLEntry).where(RealizedPNLEntry.fill_id == fill.id))
         return InventoryResult(
             fill.id, False, _decimal(position.base_quantity), _decimal(position.quote_cost),
             _decimal(existing_pnl.realized_pnl) if existing_pnl else ZERO,
         )
 
-    db.add(InventoryApplication(fill_id=fill.id))
-    db.flush()
+    # The pre-check above is only an optimization. Two concurrent sessions can
+    # both observe no application, so the unique constraint remains the final
+    # idempotency guard. A savepoint lets the losing transaction recover without
+    # invalidating the caller's outer transaction.
+    try:
+        with db.begin_nested():
+            db.add(InventoryApplication(fill_id=fill.id))
+            db.flush()
+    except IntegrityError:
+        existing = db.scalar(select(InventoryApplication).where(InventoryApplication.fill_id == fill.id))
+        if existing is None:
+            raise
+        existing_pnl = db.scalar(select(RealizedPNLEntry).where(RealizedPNLEntry.fill_id == fill.id))
+        return InventoryResult(
+            fill.id, False, _decimal(position.base_quantity), _decimal(position.quote_cost),
+            _decimal(existing_pnl.realized_pnl) if existing_pnl else ZERO,
+        )
+
     _, quote = _assets(fill.symbol)
     fee_currency = (fill.fee_currency or "").upper()
     base_asset = position.base_asset.upper()
