@@ -17,7 +17,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .db import get_db, init_db
+from .db import get_db
 from .grid import build_grid
 from .models import RiskState, SpotOrder
 
@@ -70,9 +70,6 @@ def csrf(r):
     payload = {"session": hashlib.sha256(session.encode()).hexdigest()} if session else {"nonce": r.cookies.get("dashboard_preauth", "")}
     return csrf_serializer.dumps(payload)
 
-
-@app.on_event("startup")
-def startup(): init_db()
 
 @app.get("/healthz")
 def healthz():
