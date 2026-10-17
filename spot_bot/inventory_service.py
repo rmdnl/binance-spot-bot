@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -60,6 +61,42 @@ def _position(db: Session, fill: SpotFill) -> InventoryPosition:
     return position
 
 
+def _existing_result(db: Session, fill: SpotFill) -> InventoryResult | None:
+    existing = db.scalar(
+        select(InventoryApplication).where(InventoryApplication.fill_id == fill.id)
+    )
+    if existing is None:
+        return None
+    position = _position(db, fill)
+    existing_pnl = db.scalar(
+        select(RealizedPNLEntry).where(RealizedPNLEntry.fill_id == fill.id)
+    )
+    return InventoryResult(
+        fill.id,
+        False,
+        _decimal(position.base_quantity),
+        _decimal(position.quote_cost),
+        _decimal(existing_pnl.realized_pnl) if existing_pnl else ZERO,
+    )
+
+
+def _reserve_application(db: Session, fill: SpotFill) -> bool:
+    """Atomically claim a fill while keeping the marker in the caller transaction."""
+    if db.bind is not None and db.bind.dialect.name == "sqlite":
+        statement = sqlite_insert(InventoryApplication).values(fill_id=fill.id)
+        statement = statement.on_conflict_do_nothing(index_elements=["fill_id"])
+        result = db.execute(statement)
+        return result.rowcount == 1
+
+    try:
+        with db.begin_nested():
+            db.add(InventoryApplication(fill_id=fill.id))
+            db.flush()
+        return True
+    except IntegrityError:
+        return False
+
+
 def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
     """Apply one exchange fill and its realized PNL atomically within caller transaction."""
     amount = _decimal(fill.amount)
@@ -70,33 +107,17 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
     if fee < ZERO:
         raise ValueError("fill fee cannot be negative")
 
-    position = _position(db, fill)
-    existing = db.scalar(select(InventoryApplication).where(InventoryApplication.fill_id == fill.id))
+    existing = _existing_result(db, fill)
     if existing is not None:
-        existing_pnl = db.scalar(select(RealizedPNLEntry).where(RealizedPNLEntry.fill_id == fill.id))
-        return InventoryResult(
-            fill.id, False, _decimal(position.base_quantity), _decimal(position.quote_cost),
-            _decimal(existing_pnl.realized_pnl) if existing_pnl else ZERO,
-        )
+        return existing
 
-    # The pre-check above is only an optimization. Two concurrent sessions can
-    # both observe no application, so the unique constraint remains the final
-    # idempotency guard. A savepoint lets the losing transaction recover without
-    # invalidating the caller's outer transaction.
-    try:
-        with db.begin_nested():
-            db.add(InventoryApplication(fill_id=fill.id))
-            db.flush()
-    except IntegrityError:
-        existing = db.scalar(select(InventoryApplication).where(InventoryApplication.fill_id == fill.id))
+    if not _reserve_application(db, fill):
+        existing = _existing_result(db, fill)
         if existing is None:
-            raise
-        existing_pnl = db.scalar(select(RealizedPNLEntry).where(RealizedPNLEntry.fill_id == fill.id))
-        return InventoryResult(
-            fill.id, False, _decimal(position.base_quantity), _decimal(position.quote_cost),
-            _decimal(existing_pnl.realized_pnl) if existing_pnl else ZERO,
-        )
+            raise RuntimeError("inventory fill claim lost without a visible application")
+        return existing
 
+    position = _position(db, fill)
     _, quote = _assets(fill.symbol)
     fee_currency = (fill.fee_currency or "").upper()
     base_asset = position.base_asset.upper()
