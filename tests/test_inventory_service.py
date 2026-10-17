@@ -1,11 +1,19 @@
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from spot_bot.inventory_service import apply_fill
-from spot_bot.models import Base, Environment, InventoryApplication, InventoryPosition, SpotFill, SpotOrder
+from spot_bot.models import (
+    Base,
+    Environment,
+    InventoryApplication,
+    InventoryPosition,
+    RealizedPNLEntry,
+    SpotFill,
+    SpotOrder,
+)
 
 D = Decimal
 
@@ -96,6 +104,77 @@ def test_sell_releases_weighted_average_cost_and_realizes_pnl(db):
     assert result.base_quantity == D("0.001")
     assert result.quote_cost == D("81.081")
     assert result.realized_pnl == D("2.835")
+
+
+def test_partial_sell_preserves_remaining_weighted_cost(db):
+    buy = make_fill(db, side="buy", amount="0.004", price="80000", fee="0.32")
+    apply_fill(db, buy)
+    db.commit()
+
+    sell = make_fill(db, side="sell", amount="0.001", price="84000", fee="0.084")
+    result = apply_fill(db, sell)
+    db.commit()
+
+    assert result.base_quantity == D("0.003")
+    assert result.quote_cost == D("240")
+    assert result.realized_pnl == D("39.916")
+    assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 1
+
+
+def test_sell_base_fee_consumes_fee_quantity_and_realizes_correct_pnl(db):
+    buy = make_fill(db, side="buy", amount="0.002", price="80000")
+    apply_fill(db, buy)
+    db.commit()
+
+    sell = make_fill(db, side="sell", amount="0.001", price="84000", fee="0.00001", fee_currency="BTC")
+    result = apply_fill(db, sell)
+    db.commit()
+
+    assert result.base_quantity == D("0.00099")
+    assert result.quote_cost == D("79.2")
+    assert result.realized_pnl == D("39.2")
+
+    pnl = db.scalar(select(RealizedPNLEntry).where(RealizedPNLEntry.fill_id == sell.id))
+    assert pnl is not None
+    assert pnl.fees == D("0")
+
+
+def test_sell_quote_fee_is_removed_from_proceeds(db):
+    buy = make_fill(db, side="buy", amount="0.001", price="80000")
+    apply_fill(db, buy)
+    db.commit()
+
+    sell = make_fill(db, side="sell", amount="0.001", price="84000", fee="0.084", fee_currency="USDT")
+    result = apply_fill(db, sell)
+    db.commit()
+
+    assert result.base_quantity == D("0")
+    assert result.quote_cost == D("0")
+    assert result.realized_pnl == D("3.916")
+
+    pnl = db.scalar(select(RealizedPNLEntry).where(RealizedPNLEntry.fill_id == sell.id))
+    assert pnl is not None
+    assert pnl.fees == D("0.084")
+    assert pnl.proceeds == D("83.916")
+
+
+def test_duplicate_fill_does_not_create_second_realized_pnl(db):
+    buy = make_fill(db, side="buy", amount="0.002", price="80000")
+    apply_fill(db, buy)
+    db.commit()
+
+    sell = make_fill(db, side="sell", amount="0.001", price="84000", fee="0.084")
+    first = apply_fill(db, sell)
+    db.commit()
+
+    second = apply_fill(db, sell)
+    db.commit()
+
+    assert first.applied is True
+    assert second.applied is False
+    assert second.realized_pnl == first.realized_pnl
+    assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 1
+    assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 2
 
 
 def test_duplicate_fill_is_idempotent(db):
