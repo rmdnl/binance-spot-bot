@@ -334,7 +334,7 @@ def test_profitability_guard_rejects_before_persisting_intent(monkeypatch):
     monkeypatch.setattr(settings, "grid_maker_fee_pct", D("0.10"))
     monkeypatch.setattr(settings, "grid_slippage_pct", D("0.05"))
     adapter = FakeAdapter()
-    plan = initial_order_plans(bot, D("85000"))[0]
+    plan = initial_order_plans(bot, D("85000"))[1]
 
     with pytest.raises(ValueError, match="below minimum"):
         submit_grid_order(db, adapter, bot, plan)
