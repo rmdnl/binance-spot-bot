@@ -1,89 +1,228 @@
 # VPS deployment guide
 
-This project is an early-stage dashboard scaffold. **Exchange order execution is disabled** in this version. Do not enable live trading based on the presence of dashboard controls.
+This guide matches the current `binance-spot-bot` source tree. The application is a FastAPI dashboard/API with Binance Spot trading support. **Live order submission remains disabled by default.** Do not enable live trading until the release has passed the full test and operational review.
 
 ## Requirements
 
 - Ubuntu 22.04/24.04 or similar
 - Python 3.11+
-- A dedicated, non-root service account
-- Cloudflare Tunnel (`cloudflared`) for public subdomain access without exposing the VPS origin port
-- Cloudflare Access policy restricted to your identity before the application login
+- Git
+- A dedicated non-root service account
+- A writable `data/` and `logs/` directory under `/opt/binance-spot-bot`
+- Binance API credentials only when exchange connectivity is required
+- Optional: Cloudflare Tunnel + Cloudflare Access for public dashboard access
+
+## Source layout and runtime entrypoint
+
+The production ASGI application is:
+
+```text
+spot_bot.main:app
+```
+
+The repository uses a Python virtual environment at `.venv`. The systemd unit in `deploy/binance-spot-bot.service` starts Uvicorn against this exact entrypoint on `127.0.0.1:8000`.
+
+Do not substitute the old `dca_bot.main:app` entrypoint or `/opt/dca-bot` paths. Those belong to an older project layout and are not valid for this repository.
 
 ## Install
 
-Create the service user and working directory, then clone the public repository:
+Create the service account and clone the repository:
 
 ```bash
-sudo useradd --system --create-home --home-dir /opt/dca-bot --shell /usr/sbin/nologin dca-bot
-sudo -u dca-bot git clone https://github.com/rmdnl/dca-bot.git /opt/dca-bot
-sudo -u dca-bot bash -lc 'cd /opt/dca-bot && bash scripts/install.sh'
+sudo useradd --system --create-home --home-dir /opt/binance-spot-bot --shell /usr/sbin/nologin binance-spot-bot
+sudo git clone https://github.com/rmdnl/binance-spot-bot.git /opt/binance-spot-bot
+sudo chown -R binance-spot-bot:binance-spot-bot /opt/binance-spot-bot
 ```
 
-Edit `/opt/dca-bot/.env`. Use a long random `APP_SECRET_KEY`, set the password hash using `python scripts/create_admin_hash.py`, and keep `APP_ENV=development` only for local smoke tests. The example config intentionally has no configured dashboard password until you set it.
-
-Generate a key and hash interactively:
+Create the virtual environment and install the project:
 
 ```bash
-cd /opt/dca-bot
-.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(48))'
-.venv/bin/python scripts/create_admin_hash.py
+sudo -u binance-spot-bot bash -lc '
+  cd /opt/binance-spot-bot
+  python3 -m venv .venv
+  .venv/bin/pip install --upgrade pip
+  .venv/bin/pip install -e .
+'
 ```
 
-Copy the generated values into `.env`; never paste plaintext passwords or secrets into the repository or chat.
+Create runtime directories and keep them outside version-controlled configuration:
 
-For production, configure at minimum:
+```bash
+sudo install -d -o binance-spot-bot -g binance-spot-bot -m 0700 /opt/binance-spot-bot/data /opt/binance-spot-bot/logs
+```
+
+## Environment configuration
+
+Create `/opt/binance-spot-bot/.env` from the repository example if present, then review every value before startup. The important safety controls are:
 
 ```ini
-APP_ENV=production
-APP_HOST=127.0.0.1
-APP_PORT=8082
-APP_SECRET_KEY=<unique-random-value-at-least-32-characters>
-ADMIN_PASSWORD_HASH=<generated-hash>
-SESSION_COOKIE_SECURE=true
-TRADING_MODE=paper
-LIVE_TRADING_ENABLED=false
-BINANCE_TESTNET=true
+DEFAULT_ENVIRONMENT=testnet
+ALLOW_ORDER_SUBMISSION=false
 ```
 
-`SESSION_COOKIE_SECURE=true` requires HTTPS. During local-only HTTP development, it may be false. Do not expose the dashboard port publicly; proxy it through HTTPS and restrict network access.
+Keep `ALLOW_ORDER_SUBMISSION=false` for the initial VPS deployment. Never put Binance API keys in source code, frontend assets, commits, or issue comments.
 
-## Start for a local smoke test
+For dashboard authentication, configure the current source's authentication variables, including `DASHBOARD_PASSWORD_HASH` and `DASHBOARD_SESSION_SECRET`, using the exact names documented by `.env.example` and the application settings. Generate secrets with a cryptographically secure random generator and store `.env` with mode `0600` owned by the service account.
 
 ```bash
-cd /opt/dca-bot
-.venv/bin/uvicorn dca_bot.main:app --host 127.0.0.1 --port 8082
+sudo chown binance-spot-bot:binance-spot-bot /opt/binance-spot-bot/.env
+sudo chmod 600 /opt/binance-spot-bot/.env
 ```
 
-Open `http://127.0.0.1:8082/login` from the VPS or through an SSH tunnel. The current build can start simulated paper deals and monitor their DCA ladder, average entry, take profit, trailing take profit and stop loss using public Spot prices. It does not submit exchange orders.
+If the environment file is absent, do not invent variable names. Inspect `.env.example` and the settings module first:
 
-## systemd
+```bash
+cd /opt/binance-spot-bot
+sed -n '1,240p' .env.example
+sed -n '1,260p' spot_bot/config.py
+```
 
-Review `deploy/dca-bot.service` before installing it. Ensure the service user's permissions allow access to the project and its `data/` and `logs/` directories. Keep the SQLite database and environment file outside version control.
+## Database migration
 
-## Before real trading
+Run Alembic migrations as the application service user before starting the service:
 
-Live trading must remain disabled until a separate, reviewed implementation covers exchange metadata validation, Spot-only order placement, idempotency, partial fills, order and trade reconciliation, transactional deal state, emergency-stop behaviour, daily-loss and equity drawdown enforcement, fee-aware PnL, and integration tests using the Binance Spot Testnet. A UI toggle alone must never activate live orders.
+```bash
+sudo -u binance-spot-bot bash -lc '
+  cd /opt/binance-spot-bot
+  .venv/bin/alembic upgrade head
+'
+```
 
+Verify the migration state:
 
-## Public subdomain through Cloudflare (recommended)
+```bash
+sudo -u binance-spot-bot bash -lc '
+  cd /opt/binance-spot-bot
+  .venv/bin/alembic current
+'
+```
 
-For an admin trading dashboard, prefer **Cloudflare Tunnel + Cloudflare Access** instead of opening port 8082 to the Internet. The application should listen only on `127.0.0.1:8082`; the tunnel makes an outbound connection and routes your chosen hostname to that local service.
+The migration chain must resolve cleanly to `head`. Do not manually create tables that are managed by Alembic. Before applying migrations to an existing production database, take a database backup and verify the current revision.
 
-1. In Cloudflare Zero Trust, create a Tunnel under **Networks > Tunnels** and install `cloudflared` on the VPS using the installation command generated by Cloudflare.
-2. Before publishing the route, create a Cloudflare Access self-hosted application for your intended hostname (for example, `trade.example.com`). Add an **Allow** policy for your own email/identity only. Keep the default-deny policy; do not allow everyone.
-3. In the tunnel's published application routes, map that hostname to `http://127.0.0.1:8082`.
-4. In the `.env` file, set `APP_ENV=production` and `SESSION_COOKIE_SECURE=true`. Keep `APP_HOST=127.0.0.1`, `TRADING_MODE=paper`, and `LIVE_TRADING_ENABLED=false` for now.
-5. Confirm the dashboard works through the hostname and that an unauthenticated identity is blocked by Cloudflare Access. The app's own password login remains enabled as a second layer.
-6. Ensure the VPS firewall/security group does not expose TCP 8082 publicly. Do not configure a public DNS record directly to the VPS IP when using Tunnel.
+## Pre-start validation
 
-Cloudflare Access is an outer access gate, not a replacement for application authentication. Also enable MFA for your Cloudflare identity, keep the tunnel token secret, and do not cache authenticated dashboard/API routes. Never put Binance API keys in frontend code.
+Run the repository's checks from the same virtual environment that systemd will use:
 
-Official guides: [Create a Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/) and [Publish a self-hosted application with Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/).
+```bash
+cd /opt/binance-spot-bot
+.venv/bin/pytest -q
+.venv/bin/ruff check .
+```
 
-**Trading status:** the current build provides a public market ticker endpoint and a deterministic DCA ladder preview for authenticated users. It still does not place paper or live orders. Keep order execution disabled.
+Do not continue to deployment if either command fails.
 
+## Smoke test
 
-## Paper worker operation
+First verify that the application imports successfully:
 
-In paper mode, the app starts a background worker that checks active simulated deals every `PAPER_POLL_INTERVAL_SECONDS` (default 10 seconds). The worker uses public market prices only and never sends orders to Binance. Keep a **single Uvicorn worker process** for this build so multiple worker processes do not poll and update the same paper state concurrently. The worker runs only when `TRADING_MODE=paper`; no live execution worker is implemented.
+```bash
+sudo -u binance-spot-bot bash -lc '
+  cd /opt/binance-spot-bot
+  .venv/bin/python -c "from spot_bot.main import app; print(app.title)"
+'
+```
+
+Start a temporary local instance without exposing it publicly:
+
+```bash
+sudo -u binance-spot-bot bash -lc '
+  cd /opt/binance-spot-bot
+  .venv/bin/uvicorn spot_bot.main:app --host 127.0.0.1 --port 8000
+'
+```
+
+From another shell on the VPS, check the local HTTP response using the routes implemented by the current application. Do not assume an endpoint from an older build. Inspect `spot_bot/main.py` and `spot_bot/trading_routes.py` if the route is unclear:
+
+```bash
+curl -i http://127.0.0.1:8000/
+```
+
+Confirm in the application logs that startup completed without database/configuration errors. Stop the temporary server before installing systemd.
+
+## systemd installation
+
+The repository contains the production unit:
+
+```text
+deploy/binance-spot-bot.service
+```
+
+Install it:
+
+```bash
+sudo cp /opt/binance-spot-bot/deploy/binance-spot-bot.service /etc/systemd/system/binance-spot-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable binance-spot-bot
+sudo systemctl start binance-spot-bot
+```
+
+Verify:
+
+```bash
+sudo systemctl status binance-spot-bot --no-pager
+sudo journalctl -u binance-spot-bot -n 100 --no-pager
+```
+
+The service intentionally binds Uvicorn to `127.0.0.1:8000`. Keep the origin port private. The unit also runs as the dedicated `binance-spot-bot` user and applies systemd hardening. If the service cannot write to runtime data/log paths, fix ownership rather than running it as root.
+
+## Safe first deployment
+
+The first VPS boot must remain in a non-live configuration:
+
+```ini
+DEFAULT_ENVIRONMENT=testnet
+ALLOW_ORDER_SUBMISSION=false
+```
+
+After startup, verify that the dashboard/API works, database migrations are current, and logs contain no unexpected order-submission activity. A successful health check does **not** authorize live trading.
+
+Before enabling real Spot orders, separately verify Binance API permissions, symbol/market metadata handling, quantity and price precision, minimum notional, fee-aware profitability, idempotency, partial fills, reconciliation, cancel/fill races, kill-switch behavior, and recovery after process/database restart. The live-order switch must remain explicitly disabled until those checks are approved.
+
+## Optional public dashboard access
+
+For remote dashboard access, prefer Cloudflare Tunnel + Cloudflare Access rather than exposing TCP 8000 directly to the Internet.
+
+The application should continue listening on `127.0.0.1:8000`. Configure the tunnel to forward the chosen hostname to `http://127.0.0.1:8000`, and put a restrictive Cloudflare Access policy in front of it. Keep MFA enabled and do not expose the VPS origin port publicly.
+
+## Operational commands
+
+```bash
+# Service status
+sudo systemctl status binance-spot-bot --no-pager
+
+# Recent application logs
+sudo journalctl -u binance-spot-bot -n 100 --no-pager
+
+# Follow logs
+sudo journalctl -u binance-spot-bot -f
+
+# Restart after an approved configuration/code update
+sudo systemctl restart binance-spot-bot
+
+# Stop safely
+sudo systemctl stop binance-spot-bot
+```
+
+For code updates, pull the intended release, reinstall dependencies if `pyproject.toml` changed, run tests/lint, run `alembic upgrade head`, and only then restart the service.
+
+## Troubleshooting
+
+If systemd exits immediately:
+
+```bash
+sudo journalctl -u binance-spot-bot -n 200 --no-pager
+```
+
+If the application fails to import, reproduce the exact service command manually as the service user:
+
+```bash
+sudo -u binance-spot-bot bash -lc 'cd /opt/binance-spot-bot && .venv/bin/python -c "from spot_bot.main import app; print(app.title)"'
+```
+
+If migrations fail, inspect the current revision before making changes:
+
+```bash
+sudo -u binance-spot-bot bash -lc 'cd /opt/binance-spot-bot && .venv/bin/alembic current'
+```
+
+Never bypass a failed migration by deleting the database or manually changing Alembic revision records on a production installation without first taking a backup and understanding the migration state.
