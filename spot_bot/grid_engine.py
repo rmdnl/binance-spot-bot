@@ -56,6 +56,44 @@ def _active_grid_order_count(db: Session, bot: GridBot) -> int:
     return len(grid_open_order_ids(db, bot))
 
 
+def _normalize_grid_request(adapter: BinanceSpot, request: OrderRequest) -> OrderRequest:
+    """Normalize the exact order that will be persisted and submitted.
+
+    Binance precision is applied before the intent is created. Therefore the
+    persisted SpotOrder, min-notional validation, and exchange submission all
+    operate on the same price and amount.
+    """
+    market = adapter.market(request.symbol)
+    amount = D(adapter.exchange.amount_to_precision(request.symbol, request.amount))
+    price = D(adapter.exchange.price_to_precision(request.symbol, request.price)) if request.price is not None else None
+    if amount <= 0:
+        raise ValueError("grid order amount rounds to zero at Binance precision")
+    if price is not None and price <= 0:
+        raise ValueError("grid order price rounds to zero at Binance precision")
+    minimum = D(str((market.get("limits") or {}).get("amount", {}).get("min") or "0"))
+    if minimum and amount < minimum:
+        raise ValueError(f"grid order amount {amount} is below Binance minimum {minimum}")
+    if request.order_type != OrderType.MARKET:
+        cost = amount * (price or D("0"))
+        minimum_cost = D(str((market.get("limits") or {}).get("cost", {}).get("min") or "0"))
+        if minimum_cost and cost < minimum_cost:
+            raise ValueError(f"grid order notional {cost} is below Binance minimum {minimum_cost}")
+        for item in market.get("info", {}).get("filters", []):
+            if item.get("filterType") in {"NOTIONAL", "MIN_NOTIONAL"} and item.get("minNotional"):
+                if cost < D(str(item["minNotional"])):
+                    raise ValueError(f"grid order notional {cost} violates Binance {item['filterType']} filter")
+    return OrderRequest(
+        environment=request.environment,
+        symbol=request.symbol,
+        side=request.side,
+        order_type=request.order_type,
+        amount=amount,
+        price=price,
+        client_order_id=request.client_order_id,
+        post_only=request.post_only,
+    )
+
+
 def submit_grid_order(db: Session, adapter: BinanceSpot, bot: GridBot, plan: GridOrderPlan) -> SubmitResult:
     if bot.status != "running":
         raise ValueError(f"grid {bot.id} is not running")
@@ -65,16 +103,12 @@ def submit_grid_order(db: Session, adapter: BinanceSpot, bot: GridBot, plan: Gri
     existing = _linked_order(level, plan.side, db)
     if existing is not None and existing.status in ACTIVE:
         return SubmitResult(existing, None)
-
-    # A terminal leg no longer consumes an open-order slot. Detach it before
-    # enforcing capacity so resume can replace a canceled/expired/rejected leg.
     if existing is not None:
         if plan.side == OrderSide.BUY:
             level.buy_order_id = None
         else:
             level.sell_order_id = None
         db.flush()
-
     if _active_grid_order_count(db, bot) >= bot.max_open_orders:
         raise ValueError("grid max_open_orders limit reached")
 
@@ -82,6 +116,7 @@ def submit_grid_order(db: Session, adapter: BinanceSpot, bot: GridBot, plan: Gri
         environment=Environment(bot.environment), symbol=bot.symbol, side=plan.side,
         order_type=grid_order_type(), amount=plan.amount, price=plan.price, post_only=True,
     )
+    request = _normalize_grid_request(adapter, request)
     order = create_intent(db, request)
     if plan.side == OrderSide.BUY:
         level.buy_order_id = order.id
@@ -176,7 +211,6 @@ def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> li
     linked_orders = [order_id for level in levels for order_id in (level.buy_order_id, level.sell_order_id) if order_id is not None]
     if not linked_orders:
         return execute_initial_grid(db, adapter, bot)
-
     for level in levels:
         for side in (OrderSide.BUY, OrderSide.SELL):
             existing = _linked_order(level, side, db)
@@ -199,7 +233,6 @@ def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> li
                 if "max_open_orders" in str(exc):
                     return results
                 raise
-
     results.extend(_resume_terminal_orders(db, adapter, bot, levels))
     return results
 
