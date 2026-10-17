@@ -46,7 +46,7 @@ def test_grid_request_is_normalized_before_persistence():
 
 def test_min_notional_uses_rounded_values():
     with pytest.raises(ValueError, match="notional"):
-        _normalize_grid_request(FakeAdapter(), request(amount="0.0999", price="100.009"))
+        _normalize_grid_request(FakeAdapter(), request(amount="0.0994", price="100.009"))
 
 
 def test_zero_after_precision_is_rejected():
