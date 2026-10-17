@@ -69,17 +69,18 @@ def _normalize_grid_request(adapter: BinanceSpot, request: OrderRequest) -> Orde
 
 def _guard_profitability(adapter: BinanceSpot, bot: GridBot, plan: GridOrderPlan, request: OrderRequest) -> None:
     levels = sorted(bot.levels, key=lambda item: item.level_index)
-    if plan.side == OrderSide.BUY:
-        if plan.level_index >= len(levels) - 1: return
-        buy_price, sell_price = request.price, levels[plan.level_index + 1].price
-    else:
-        if plan.level_index <= 0: return
-        buy_price, sell_price = levels[plan.level_index - 1].price, request.price
-    if buy_price is None or sell_price is None: return
-    buy_req = _normalize_grid_request(adapter, OrderRequest(request.environment, request.symbol, OrderSide.BUY, request.order_type, request.amount, buy_price, post_only=True))
-    sell_req = _normalize_grid_request(adapter, OrderRequest(request.environment, request.symbol, OrderSide.SELL, request.order_type, request.amount, sell_price, post_only=True))
-    qty = min(buy_req.amount, sell_req.amount)
-    economics = calculate_grid_economics(buy_req.price, sell_req.price, qty, get_settings().grid_maker_fee_pct, get_settings().grid_slippage_pct)
+    target_index = plan.level_index + 1 if plan.side == OrderSide.BUY else plan.level_index - 1
+    if target_index < 0 or target_index >= len(levels): return
+    target = next((level for level in levels if level.level_index == target_index), None)
+    if target is None: raise ValueError("adjacent grid level is missing; profitability cannot be verified")
+    buy_price = request.price if plan.side == OrderSide.BUY else target.price
+    sell_price = target.price if plan.side == OrderSide.BUY else request.price
+    if buy_price is None or sell_price is None: raise ValueError("limit grid economics require both prices")
+    opposite_side = OrderSide.SELL if plan.side == OrderSide.BUY else OrderSide.BUY
+    opposite_request = OrderRequest(request.environment, request.symbol, opposite_side, request.order_type, request.amount, target.price, post_only=True)
+    opposite_request = _normalize_grid_request(adapter, opposite_request)
+    qty = min(request.amount, opposite_request.amount)
+    economics = calculate_grid_economics(buy_price, sell_price, qty, get_settings().grid_maker_fee_pct, get_settings().grid_slippage_pct)
     enforce_min_net_profit(economics, get_settings().grid_min_net_profit_pct)
 
 def submit_grid_order(db: Session, adapter: BinanceSpot, bot: GridBot, plan: GridOrderPlan) -> SubmitResult:
@@ -142,7 +143,7 @@ def _resume_terminal_orders(db: Session, adapter: BinanceSpot, bot: GridBot, lev
             if existing is None or existing.status not in RESUMABLE: continue
             plan=_resumable_plan(bot, existing, level)
             if plan is None: continue
-            try: results.append(submit_grid_order(db, adapter, bot, plan))
+            try: results.append(submit_grid_order(db,adapter,bot,plan))
             except ValueError as exc:
                 if "max_open_orders" in str(exc): return results
                 raise
@@ -150,31 +151,31 @@ def _resume_terminal_orders(db: Session, adapter: BinanceSpot, bot: GridBot, lev
 
 def resume_grid_execution(db: Session, adapter: BinanceSpot, bot: GridBot) -> list[SubmitResult]:
     levels=sorted(start_grid(db, bot), key=lambda item:item.level_index); db.commit(); results=[]
-    if not any(level.buy_order_id or level.sell_order_id for level in levels): return execute_initial_grid(db, adapter, bot)
+    if not any(level.buy_order_id or level.sell_order_id for level in levels): return execute_initial_grid(db,adapter,bot)
     for level in levels:
-        for side in (OrderSide.BUY, OrderSide.SELL):
-            existing=_linked_order(level, side, db)
+        for side in (OrderSide.BUY,OrderSide.SELL):
+            existing=_linked_order(level,side,db)
             if existing is None or existing.status != OrderStatus.FILLED.value: continue
-            plan=opposite_plan(bot, existing)
+            plan=opposite_plan(bot,existing)
             if plan is None: continue
-            target=next((item for item in levels if item.level_index==plan.level_index), None)
+            target=next((item for item in levels if item.level_index==plan.level_index),None)
             if target is None: continue
-            target_order=_linked_order(target, plan.side, db)
+            target_order=_linked_order(target,plan.side,db)
             if target_order is not None and target_order.status in ACTIVE: continue
-            try: results.append(submit_grid_order(db, adapter, bot, plan))
+            try: results.append(submit_grid_order(db,adapter,bot,plan))
             except ValueError as exc:
                 if "max_open_orders" in str(exc): return results
                 raise
-    results.extend(_resume_terminal_orders(db, adapter, bot, levels)); return results
+    results.extend(_resume_terminal_orders(db,adapter,bot,levels)); return results
 
 def opposite_plan(bot: GridBot, filled_order: SpotOrder) -> GridOrderPlan | None:
-    levels=sorted(bot.levels, key=lambda item:item.level_index)
-    linked=next((level for level in levels if level.buy_order_id==filled_order.id or level.sell_order_id==filled_order.id), None)
+    levels=sorted(bot.levels,key=lambda item:item.level_index)
+    linked=next((level for level in levels if level.buy_order_id==filled_order.id or level.sell_order_id==filled_order.id),None)
     if linked is None: return None
     opposite=OrderSide.SELL if filled_order.side==OrderSide.BUY.value else OrderSide.BUY
     target_index=linked.level_index+1 if opposite==OrderSide.SELL else linked.level_index-1
     if target_index<0 or target_index>=bot.grids: return None
-    target=next((level for level in levels if level.level_index==target_index), None)
+    target=next((level for level in levels if level.level_index==target_index),None)
     if target is None: return None
     if opposite==OrderSide.SELL: amount=filled_order.filled_amount
     else:
@@ -187,7 +188,7 @@ def execute_initial_grid(db: Session, adapter: BinanceSpot, bot: GridBot) -> lis
     if current<=0: raise ValueError("exchange ticker has no usable price")
     results=[]
     for plan in initial_order_plans(bot,current):
-        level=db.scalar(select(GridLevel).where(GridLevel.bot_id==bot.id, GridLevel.level_index==plan.level_index))
+        level=db.scalar(select(GridLevel).where(GridLevel.bot_id==bot.id,GridLevel.level_index==plan.level_index))
         if level is None: continue
         existing=_linked_order(level,plan.side,db)
         if existing is not None and existing.status==OrderStatus.FILLED.value: continue
