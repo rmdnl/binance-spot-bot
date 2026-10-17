@@ -70,9 +70,11 @@ def _normalize_grid_request(adapter: BinanceSpot, request: OrderRequest) -> Orde
 def _guard_profitability(adapter: BinanceSpot, bot: GridBot, plan: GridOrderPlan, request: OrderRequest) -> None:
     levels = sorted(bot.levels, key=lambda item: item.level_index)
     target_index = plan.level_index + 1 if plan.side == OrderSide.BUY else plan.level_index - 1
-    if target_index < 0 or target_index >= len(levels): return
+    if target_index < 0 or target_index >= bot.grids:
+        return
     target = next((level for level in levels if level.level_index == target_index), None)
-    if target is None: raise ValueError("adjacent grid level is missing; profitability cannot be verified")
+    if target is None:
+        raise ValueError("adjacent grid level is missing; profitability cannot be verified")
     buy_price = request.price if plan.side == OrderSide.BUY else target.price
     sell_price = target.price if plan.side == OrderSide.BUY else request.price
     if buy_price is None or sell_price is None: raise ValueError("limit grid economics require both prices")
