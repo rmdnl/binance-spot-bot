@@ -76,10 +76,18 @@ def _guard_profitability(adapter: BinanceSpot, bot: GridBot, plan: GridOrderPlan
     buy_price = request.price if plan.side == OrderSide.BUY else target.price
     sell_price = target.price if plan.side == OrderSide.BUY else request.price
     if buy_price is None or sell_price is None: raise ValueError("limit grid economics require both prices")
+    # Normalize the complete adjacent cycle, not just the order being submitted.
     opposite_side = OrderSide.SELL if plan.side == OrderSide.BUY else OrderSide.BUY
     opposite_request = OrderRequest(request.environment, request.symbol, opposite_side, request.order_type, request.amount, target.price, post_only=True)
-    opposite_request = _normalize_grid_request(adapter, opposite_request)
-    qty = min(request.amount, opposite_request.amount)
+    buy_req = request if plan.side == OrderSide.BUY else opposite_request
+    sell_req = opposite_request if plan.side == OrderSide.BUY else request
+    buy_req = _normalize_grid_request(adapter, buy_req)
+    sell_req = _normalize_grid_request(adapter, sell_req)
+    buy_price = buy_req.price
+    sell_price = sell_req.price
+    if buy_price is None or sell_price is None:
+        raise ValueError("normalized cycle requires both limit prices")
+    qty = min(buy_req.amount, sell_req.amount)
     economics = calculate_grid_economics(buy_price, sell_price, qty, get_settings().grid_maker_fee_pct, get_settings().grid_slippage_pct)
     enforce_min_net_profit(economics, get_settings().grid_min_net_profit_pct)
 
