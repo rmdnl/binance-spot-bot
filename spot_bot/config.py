@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from decimal import Decimal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -21,6 +22,9 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/spot_bot.db"
     default_environment: str = "testnet"
     allow_order_submission: bool = False
+    grid_min_net_profit_pct: Decimal = Field(default=Decimal("0.30"), ge=Decimal("0"))
+    grid_maker_fee_pct: Decimal = Field(default=Decimal("0.10"), ge=Decimal("0"))
+    grid_slippage_pct: Decimal = Field(default=Decimal("0.05"), ge=Decimal("0"))
 
     def credentials(self, environment: str):
         env = environment.lower().strip()
