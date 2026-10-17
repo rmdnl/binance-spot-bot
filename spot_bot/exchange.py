@@ -51,19 +51,20 @@ class BinanceSpot:
         minimum = D(str((market.get("limits") or {}).get("amount", {}).get("min") or "0"))
         if minimum and amount < minimum:
             raise ExchangeSafetyError(f"Amount {amount} is below Binance minimum {minimum}")
+        price = None
         if request.price is not None:
             price = D(self.exchange.price_to_precision(request.symbol, request.price))
             if price != request.price:
                 raise ExchangeSafetyError(f"Price violates Binance precision: {request.price} -> {price}")
-        cost = amount * (request.price or D("0"))
+        cost = amount * (price or D("0"))
         minimum_cost = D(str((market.get("limits") or {}).get("cost", {}).get("min") or "0"))
         if request.order_type != OrderType.MARKET and minimum_cost and cost < minimum_cost:
             raise ExchangeSafetyError(f"Order notional {cost} is below Binance minimum {minimum_cost}")
         filters = market.get("info", {}).get("filters", [])
         for item in filters:
-            if item.get("filterType") == "NOTIONAL" and item.get("minNotional"):
+            if item.get("filterType") in {"NOTIONAL", "MIN_NOTIONAL"} and item.get("minNotional"):
                 if request.order_type != OrderType.MARKET and cost < D(str(item["minNotional"])):
-                    raise ExchangeSafetyError("Order notional violates Binance NOTIONAL filter")
+                    raise ExchangeSafetyError(f"Order notional violates Binance {item['filterType']} filter")
 
     def balance(self):
         return self.exchange.fetch_balance()
