@@ -1,6 +1,7 @@
 from decimal import Decimal as D
 
 import ccxt
+import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
@@ -319,3 +320,40 @@ def test_reconcile_twice_does_not_duplicate_fill_or_inventory_pnl():
     assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 1
     assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0
     assert db.scalar(select(func.count()).select_from(SpotFill).where(SpotFill.order_id == order.id)) == 1
+
+
+def test_profitability_guard_rejects_before_persisting_intent(monkeypatch):
+    from spot_bot.config import get_settings
+
+    db = session()
+    bot = make_bot(db)
+    start_test_grid(db, bot)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "grid_min_net_profit_pct", D("0.80"))
+    monkeypatch.setattr(settings, "grid_maker_fee_pct", D("0.10"))
+    monkeypatch.setattr(settings, "grid_slippage_pct", D("0.05"))
+    adapter = FakeAdapter()
+    plan = initial_order_plans(bot, D("85000"))[0]
+
+    with pytest.raises(ValueError, match="below minimum"):
+        submit_grid_order(db, adapter, bot, plan)
+
+    assert len(adapter.submissions) == 0
+    assert db.scalar(select(func.count()).select_from(SpotOrder)) == 0
+
+
+def test_profitability_guard_allows_profitable_grid_cycle(monkeypatch):
+    from spot_bot.config import get_settings
+
+    db = session()
+    bot = make_bot(db)
+    start_test_grid(db, bot)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "grid_min_net_profit_pct", D("0.30"))
+    monkeypatch.setattr(settings, "grid_maker_fee_pct", D("0.10"))
+    monkeypatch.setattr(settings, "grid_slippage_pct", D("0.05"))
+    adapter = FakeAdapter()
+    result = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[0])
+
+    assert result.order.status == OrderStatus.OPEN.value
+    assert len(adapter.submissions) == 1
