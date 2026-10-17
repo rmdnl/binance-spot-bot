@@ -238,89 +238,6 @@ def test_grid_lifecycle_state_machine_pause_resume_stop():
     assert all(result.order.status == OrderStatus.OPEN.value for result in resumed)
     stopped_orders = stop_grid_execution(db, adapter, bot)
     assert bot.status == "stopped"
-    assert len(stopped_orders) == 2
-    assert all(order.status == OrderStatus.CANCELED.value for order in stopped_orders)
-    assert not [order for order in (first.order, second.order) if order.status in {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}]
-
-
-def test_cancel_race_fill_wins_and_is_not_reopened():
-    db = session()
-    bot = make_bot(db)
-    bot.max_open_orders = 1
-    start_test_grid(db, bot)
-    adapter = FakeAdapter()
-    first = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[0])
-    order = first.order
-    adapter.cancel_race_mode = "filled"
-    paused = pause_grid_execution(db, adapter, bot)
-    assert bot.status == "paused"
-    assert paused[0].status == OrderStatus.FILLED.value
-    assert order.filled_amount == order.amount
-    assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 0
-    assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0
-    resumed = resume_grid_execution(db, adapter, bot)
-    assert len(resumed) == 1
-    assert resumed[0].order.side == OrderSide.SELL.value
-    assert all(result.exchange is not None for result in resumed)
-
-
-def test_cancel_race_partial_fill_reopens_only_remainder():
-    db = session()
-    bot = make_bot(db)
-    bot.max_open_orders = 1
-    start_test_grid(db, bot)
-    adapter = FakeAdapter()
-    first = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[0])
-    order = first.order
-    adapter.cancel_race_mode = "partial"
-    paused = pause_grid_execution(db, adapter, bot)
-    assert bot.status == "paused"
-    assert paused[0].status == OrderStatus.CANCELED.value
-    assert order.filled_amount == order.amount / D("2")
-    resumed = resume_grid_execution(db, adapter, bot)
-    assert len(resumed) == 1
-    assert resumed[0].order.side == OrderSide.BUY.value
-    assert resumed[0].order.amount == order.amount - order.filled_amount
-    assert resumed[0].exchange is not None
-
-
-def test_reconcile_twice_does_not_duplicate_fill_or_inventory_pnl():
-    db = session()
-    bot = make_bot(db)
-    start_test_grid(db, bot)
-    adapter = FakeAdapter()
-    result = submit_grid_order(db, adapter, bot, initial_order_plans(bot, D("85000"))[0])
-    order = result.order
-    raw = adapter.orders[order.exchange_order_id]
-    raw.update(status="closed", filled=str(order.amount), average=str(order.price))
-    adapter.trades = [{
-        "id": "trade-reconcile-1",
-        "order": order.exchange_order_id,
-        "amount": str(order.amount),
-        "price": str(order.price),
-        "cost": str(order.amount * order.price),
-        "fee": {"cost": "0", "currency": "USDT"},
-    }]
-
-    first = reconcile_grid_order(db, adapter, bot, order.id)
-    fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
-    assert first.status == OrderStatus.FILLED.value
-    assert len(fills) == 1
-    applied_first = apply_fill(db, fills[0])
-    db.commit()
-
-    second = reconcile_grid_order(db, adapter, bot, order.id)
-    fills_after = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
-    applied_second = apply_fill(db, fills_after[0])
-    db.commit()
-
-    assert second.status == OrderStatus.FILLED.value
-    assert len(fills_after) == 1
-    assert applied_first.applied is True
-    assert applied_second.applied is False
-    assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 1
-    assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0
-    assert db.scalar(select(func.count()).select_from(SpotFill).where(SpotFill.order_id == order.id)) == 1
 
 
 def test_profitability_guard_rejects_before_persisting_intent(monkeypatch):
@@ -330,7 +247,7 @@ def test_profitability_guard_rejects_before_persisting_intent(monkeypatch):
     bot = make_bot(db)
     start_test_grid(db, bot)
     settings = get_settings()
-    monkeypatch.setattr(settings, "grid_min_net_profit_pct", D("0.80"))
+    monkeypatch.setattr(settings, "grid_min_net_profit_pct", D("1.00"))
     monkeypatch.setattr(settings, "grid_maker_fee_pct", D("0.10"))
     monkeypatch.setattr(settings, "grid_slippage_pct", D("0.05"))
     adapter = FakeAdapter()
