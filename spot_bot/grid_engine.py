@@ -71,7 +71,7 @@ def _guard_profitability(adapter: BinanceSpot, bot: GridBot, plan: GridOrderPlan
     levels = sorted(bot.levels, key=lambda item: item.level_index)
     target_index = plan.level_index + 1 if plan.side == OrderSide.BUY else plan.level_index - 1
     if target_index < 0 or target_index >= bot.grids:
-        return
+        raise ValueError("grid order has no adjacent level; profitability cannot be verified")
     target = next((level for level in levels if level.level_index == target_index), None)
     if target is None:
         raise ValueError("adjacent grid level is missing; profitability cannot be verified")
