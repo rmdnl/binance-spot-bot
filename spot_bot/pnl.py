@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import InventoryPosition, RealizedPNLEntry, SpotFill
+from .models import Environment, InventoryPosition, RealizedPNLEntry
 
 D = Decimal
 
@@ -17,22 +17,27 @@ def quote_asset(symbol: str) -> str:
     return parts[1]
 
 
-def position_for_symbol(db: Session, symbol: str):
-    """Return the persisted inventory ledger state for a symbol.
+def position_for_symbol(db: Session, symbol: str, environment: Environment = Environment.TESTNET):
+    """Return persisted inventory and realized PNL for one environment/symbol.
 
-    InventoryPosition is the single source of truth. This function intentionally
-    does not replay SpotFill rows, avoiding a second accounting implementation
-    with potentially different fee and inventory semantics.
+    InventoryPosition and RealizedPNLEntry are the accounting source of truth.
+    SpotFill rows are intentionally not replayed here, avoiding a second
+    accounting implementation with different fee and inventory semantics.
     """
     position = db.scalar(
-        select(InventoryPosition).where(InventoryPosition.symbol == symbol)
+        select(InventoryPosition).where(
+            InventoryPosition.environment == environment,
+            InventoryPosition.symbol == symbol,
+        )
     )
     if position is None:
         return D("0"), D("0"), D("0")
 
     realized = db.scalar(
-        select(RealizedPNLEntry.realized_pnl)
-        .where(RealizedPNLEntry.symbol == symbol)
+        select(func.coalesce(func.sum(RealizedPNLEntry.realized_pnl), D("0"))).where(
+            RealizedPNLEntry.environment == environment,
+            RealizedPNLEntry.symbol == symbol,
+        )
     )
     return (
         D(str(position.base_quantity)),
@@ -41,10 +46,16 @@ def position_for_symbol(db: Session, symbol: str):
     )
 
 
-def pnl_snapshot(db: Session, symbol: str, mark_price: D):
-    qty, cost, realized = position_for_symbol(db, symbol)
+def pnl_snapshot(
+    db: Session,
+    symbol: str,
+    mark_price: D,
+    environment: Environment = Environment.TESTNET,
+):
+    qty, cost, realized = position_for_symbol(db, symbol, environment)
     return {
         "symbol": symbol,
+        "environment": environment.value,
         "quantity": str(qty),
         "cost_basis_quote": str(cost),
         "realized_pnl_quote": str(realized),
