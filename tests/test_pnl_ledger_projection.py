@@ -53,8 +53,8 @@ def test_pnl_reads_persisted_inventory_and_realized_ledger():
 
         snapshot = pnl_snapshot(db, "BTC/USDT", D("70000"), Environment.TESTNET)
         assert snapshot["environment"] == "testnet"
-        assert snapshot["realized_pnl_quote"] == "495"
-        assert snapshot["unrealized_pnl_quote"] == "2500.00"
+        assert D(snapshot["realized_pnl_quote"]) == D("495")
+        assert D(snapshot["unrealized_pnl_quote"]) == D("2500.00")
 
 
 def test_pnl_does_not_mix_testnet_and_live_ledgers():
@@ -75,7 +75,8 @@ def test_pnl_does_not_mix_testnet_and_live_ledgers():
 
 
 def test_missing_ledger_returns_zero_without_replaying_fills():
-    engine = make_db()
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
     with Session(engine) as db:
         assert position_for_symbol(db, "ETH/USDT", Environment.TESTNET) == (
             D("0"), D("0"), D("0")
