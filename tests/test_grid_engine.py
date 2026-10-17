@@ -26,6 +26,7 @@ from spot_bot.models import (
     OrderStatus,
     RealizedPNLEntry,
     SpotFill,
+    SpotOrder,
 )
 
 
