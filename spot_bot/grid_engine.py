@@ -57,23 +57,33 @@ def _active_grid_order_count(db: Session, bot: GridBot) -> int:
 
 
 def _normalize_grid_request(adapter: BinanceSpot, request: OrderRequest) -> OrderRequest:
-    """Normalize the exact order that will be persisted and submitted.
+    """Normalize the order using exchange precision and, when available, filters.
 
-    Real Binance adapters expose authoritative market metadata. Lightweight test
-    adapters may omit that metadata, in which case precision normalization still
-    runs and the real exchange adapter remains responsible for final validation.
+    Real BinanceSpot exposes ``exchange`` and ``market`` metadata. Lightweight
+    adapters used by lifecycle tests may expose neither; those adapters must not
+    be forced to implement the full Binance market interface. Final validation
+    still happens inside the real Binance adapter before submission.
     """
-    market_fn = getattr(adapter, "market", None)
-    market = market_fn(request.symbol) if callable(market_fn) else {}
-    amount = D(adapter.exchange.amount_to_precision(request.symbol, request.amount))
-    price = D(adapter.exchange.price_to_precision(request.symbol, request.price)) if request.price is not None else None
+    exchange = getattr(adapter, "exchange", None)
+    if exchange is None:
+        return request
+
+    amount_to_precision = getattr(exchange, "amount_to_precision", None)
+    price_to_precision = getattr(exchange, "price_to_precision", None)
+    amount = D(str(amount_to_precision(request.symbol, request.amount))) if callable(amount_to_precision) else request.amount
+    price = D(str(price_to_precision(request.symbol, request.price))) if request.price is not None and callable(price_to_precision) else request.price
+
     if amount <= 0:
         raise ValueError("grid order amount rounds to zero at Binance precision")
     if price is not None and price <= 0:
         raise ValueError("grid order price rounds to zero at Binance precision")
+
+    market_fn = getattr(adapter, "market", None)
+    market = market_fn(request.symbol) if callable(market_fn) else {}
     minimum = D(str((market.get("limits") or {}).get("amount", {}).get("min") or "0"))
     if minimum and amount < minimum:
         raise ValueError(f"grid order amount {amount} is below Binance minimum {minimum}")
+
     if request.order_type != OrderType.MARKET:
         cost = amount * (price or D("0"))
         minimum_cost = D(str((market.get("limits") or {}).get("cost", {}).get("min") or "0"))
@@ -83,6 +93,7 @@ def _normalize_grid_request(adapter: BinanceSpot, request: OrderRequest) -> Orde
             if item.get("filterType") in {"NOTIONAL", "MIN_NOTIONAL"} and item.get("minNotional"):
                 if cost < D(str(item["minNotional"])):
                     raise ValueError(f"grid order notional {cost} violates Binance {item['filterType']} filter")
+
     return OrderRequest(
         environment=request.environment,
         symbol=request.symbol,
@@ -247,7 +258,7 @@ def opposite_plan(bot: GridBot, filled_order: SpotOrder) -> GridOrderPlan | None
     target_index = linked.level_index + 1 if opposite == OrderSide.SELL else linked.level_index - 1
     if target_index < 0 or target_index >= bot.grids:
         return None
-    target = next((level for level in levels if item.level_index == target_index), None)
+    target = next((level for level in levels if level.level_index == target_index), None)
     if target is None:
         return None
     if opposite == OrderSide.SELL:
