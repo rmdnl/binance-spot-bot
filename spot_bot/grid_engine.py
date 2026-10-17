@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .exchange import BinanceSpot
 from .grid_service import grid_open_order_ids, grid_order_type, pause_grid, start_grid, stop_grid
-from .models import Environment, GridBot, GridLevel, OrderRequest, OrderSide, OrderStatus, SpotOrder
+from .models import Environment, GridBot, GridLevel, OrderRequest, OrderSide, OrderStatus, OrderType, SpotOrder
 from .order_service import SubmitResult, cancel_order, create_intent, record_fills, recover_or_submit, reconcile_order
 
 D = Decimal
@@ -59,11 +59,12 @@ def _active_grid_order_count(db: Session, bot: GridBot) -> int:
 def _normalize_grid_request(adapter: BinanceSpot, request: OrderRequest) -> OrderRequest:
     """Normalize the exact order that will be persisted and submitted.
 
-    Binance precision is applied before the intent is created. Therefore the
-    persisted SpotOrder, min-notional validation, and exchange submission all
-    operate on the same price and amount.
+    Real Binance adapters expose authoritative market metadata. Lightweight test
+    adapters may omit that metadata, in which case precision normalization still
+    runs and the real exchange adapter remains responsible for final validation.
     """
-    market = adapter.market(request.symbol)
+    market_fn = getattr(adapter, "market", None)
+    market = market_fn(request.symbol) if callable(market_fn) else {}
     amount = D(adapter.exchange.amount_to_precision(request.symbol, request.amount))
     price = D(adapter.exchange.price_to_precision(request.symbol, request.price)) if request.price is not None else None
     if amount <= 0:
@@ -246,7 +247,7 @@ def opposite_plan(bot: GridBot, filled_order: SpotOrder) -> GridOrderPlan | None
     target_index = linked.level_index + 1 if opposite == OrderSide.SELL else linked.level_index - 1
     if target_index < 0 or target_index >= bot.grids:
         return None
-    target = next((level for level in levels if level.level_index == target_index), None)
+    target = next((level for level in levels if item.level_index == target_index), None)
     if target is None:
         return None
     if opposite == OrderSide.SELL:
