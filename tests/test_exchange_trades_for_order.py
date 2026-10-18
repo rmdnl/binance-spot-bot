@@ -35,3 +35,27 @@ def test_trades_for_order_uses_recent_trades_for_non_numeric_id():
         {"id": "fallback-trade", "order": "legacy-id", "symbol": "BTC/USDT", "limit": 100}
     ]
     assert adapter.exchange.calls == []
+
+
+def test_historical_price_uses_latest_market_trade_not_after_fill_time():
+    from datetime import UTC, datetime
+
+    class HistoricalExchange(FakeExchange):
+        def market(self, symbol):
+            return {"spot": True}
+
+        def fetch_trades(self, symbol, since=None, limit=None):
+            self.historical_call = (symbol, since, limit)
+            return [
+                {"timestamp": since + 1000, "price": "2"},
+                {"timestamp": since + 2000, "price": "3"},
+                {"timestamp": since + 3000, "price": "999"},
+            ]
+
+    adapter = object.__new__(BinanceSpot)
+    adapter.exchange = HistoricalExchange()
+    fill_time = datetime.fromtimestamp((adapter.exchange and 1_800_000_000_000) / 1000, UTC)
+    price = adapter.historical_price("BNB/USDT", fill_time, max_age_ms=5000)
+
+    assert price == __import__("decimal").Decimal("3")
+    assert adapter.exchange.historical_call[0] == "BNB/USDT"
