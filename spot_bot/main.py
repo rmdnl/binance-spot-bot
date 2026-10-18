@@ -19,8 +19,9 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_db, init_db
+from .dashboard_metrics import dashboard_metrics
 from .grid import build_grid
-from .models import RiskState, SpotOrder
+from .models import Environment, RiskState, SpotOrder
 
 BASE = Path(__file__).resolve().parent
 settings = get_settings()
@@ -131,6 +132,17 @@ def account(r: Request):
         trades = ex.recent_trades(limit=25)
         return {"available": True, "balances": rows, "trades": trades}
     except Exception as exc: return {"available": False, "error": str(exc), "balances": [], "trades": []}
+
+@app.get("/api/metrics")
+def account_metrics(r: Request, db: Session = Depends(get_db)):
+    require_auth(r)
+    from .exchange import BinanceSpot
+    try:
+        environment = Environment(settings.default_environment)
+        adapter = BinanceSpot(environment)
+        return {"available": True, **dashboard_metrics(db, adapter, environment)}
+    except Exception as exc:
+        return {"available": False, "error": str(exc)}
 
 @app.get("/api/orders")
 def orders(r: Request, db: Session = Depends(get_db)):
