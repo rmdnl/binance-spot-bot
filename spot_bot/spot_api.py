@@ -1,8 +1,11 @@
+from collections.abc import Callable
 from decimal import Decimal
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from .db import get_db
 from .exchange import BinanceSpot
@@ -12,6 +15,35 @@ from .order_service import cancel_order, create_intent, record_fills, reconcile_
 router = APIRouter(prefix="/api/spot", tags=["spot"])
 D = Decimal
 ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
+T = TypeVar("T")
+
+
+def _commit_order_transaction(
+    db: Session,
+    order_id: int,
+    operation: Callable[[SpotOrder], T],
+) -> tuple[SpotOrder, T]:
+    """Retry a stale ORM write by replaying the whole rolled-back transaction.
+
+    External operations must be idempotent: submit recovers by clientOrderId,
+    while cancel/reconcile fetch the exchange's current order state.
+    """
+    for attempt in range(2):
+        order = db.get(SpotOrder, order_id, populate_existing=True)
+        if order is None:
+            raise LookupError(f"Order {order_id} not found")
+        try:
+            result = operation(order)
+            db.commit()
+            return order, result
+        except StaleDataError:
+            db.rollback()
+            if attempt == 1:
+                raise
+        except Exception:
+            db.rollback()
+            raise
+    raise RuntimeError("stale order transaction retry exhausted")
 
 
 def require_auth(request: Request) -> None:
@@ -57,7 +89,7 @@ def create_spot_order(
         raise HTTPException(400, f"Invalid order parameters: {exc}") from exc
     req = OrderRequest(env, symbol.upper().strip(), side_enum, type_enum, amount_d, price_d, None, type_enum == OrderType.LIMIT_MAKER)
 
-    # Transaction 1: make the intent durable before any Binance network side effect.
+    # Transaction 1: persist the intent before any Binance network side effect.
     try:
         order = create_intent(db, req)
         db.commit()
@@ -65,14 +97,18 @@ def create_spot_order(
         db.rollback()
         raise
 
-    # Binance I/O is deliberately outside the DB transaction. clientOrderId makes retry/recovery idempotent.
+    # Binance I/O stays outside the durable intent transaction. The client ID
+    # makes replay safe if a stale inventory write aborts accounting.
     try:
         adapter = BinanceSpot(env)
-        result = recover_or_submit(db, adapter, order)
-        db.commit()  # Transaction 2: persist the exchange acknowledgement.
+        order, result = _commit_order_transaction(
+            db, order.id, lambda current: recover_or_submit(db, adapter, current)
+        )
     except Exception as exc:
         db.rollback()
-        return JSONResponse({"id": order.id, "status": order.status, "error": str(exc), "recoverable": True}, status_code=502)
+        current = db.get(SpotOrder, order.id)
+        status = current.status if current else order.status
+        return JSONResponse({"id": order.id, "status": status, "error": str(exc), "recoverable": True}, status_code=502)
     return order_response(result.order)
 
 
@@ -87,12 +123,17 @@ def cancel_spot_order(order_id: int, request: Request, csrf_token: str = Form(..
         raise HTTPException(409, f"Order is not cancelable from {order.status}")
     try:
         adapter = BinanceSpot(Environment(order.environment))
-        cancel_order(db, adapter, order)
-        record_fills(db, adapter, order)
-        db.commit()
+
+        def cancel_and_account(current: SpotOrder) -> None:
+            cancel_order(db, adapter, current)
+            record_fills(db, adapter, current)
+
+        order, _ = _commit_order_transaction(db, order_id, cancel_and_account)
     except Exception as exc:
         db.rollback()
-        return JSONResponse({"id": order.id, "status": order.status, "error": str(exc), "recoverable": True}, status_code=502)
+        current = db.get(SpotOrder, order_id)
+        status = current.status if current else order.status
+        return JSONResponse({"id": order_id, "status": status, "error": str(exc), "recoverable": True}, status_code=502)
     return order_response(order)
 
 
@@ -105,10 +146,15 @@ def reconcile(order_id: int, request: Request, csrf_token: str = Form(...), db: 
         raise HTTPException(404, "Order not found")
     try:
         adapter = BinanceSpot(Environment(order.environment))
-        reconcile_order(db, adapter, order)
-        record_fills(db, adapter, order)
-        db.commit()
+
+        def reconcile_and_account(current: SpotOrder) -> None:
+            reconcile_order(db, adapter, current)
+            record_fills(db, adapter, current)
+
+        order, _ = _commit_order_transaction(db, order_id, reconcile_and_account)
     except Exception as exc:
         db.rollback()
-        return JSONResponse({"id": order.id, "status": order.status, "error": str(exc), "recoverable": True}, status_code=502)
+        current = db.get(SpotOrder, order_id)
+        status = current.status if current else order.status
+        return JSONResponse({"id": order_id, "status": status, "error": str(exc), "recoverable": True}, status_code=502)
     return order_response(order)
