@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import asynccontextmanager
 import hmac
 import secrets
 import time
@@ -23,13 +24,20 @@ from .models import RiskState, SpotOrder
 
 BASE = Path(__file__).resolve().parent
 settings = get_settings()
-app = FastAPI(title="Binance Spot Bot", docs_url=None, redoc_url=None, openapi_url=None)
-
-
-@app.on_event("startup")
-def migrate_database_before_serving() -> None:
-    """Apply pending schema migrations before the app serves requests."""
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Apply pending schema migrations before serving requests."""
     init_db()
+    yield
+
+
+app = FastAPI(
+    title="Binance Spot Bot",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    lifespan=lifespan,
+)
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
