@@ -153,7 +153,7 @@ def account(r: Request, db: Session = Depends(get_db)):
     # snapshot if a market-data/database issue prevents PNL valuation.
     metrics_error = None
     try:
-        metrics = dashboard_metrics(db, ex, environment)
+        metrics = dashboard_metrics(db, ex, environment, balance_snapshot=raw)
     except Exception as exc:
         metrics = None
         metrics_error = str(exc)
