@@ -9,7 +9,6 @@ from .db import get_db
 from .exchange import BinanceSpot
 from .grid_engine import execute_initial_grid, pause_grid_execution, resume_grid_execution, stop_grid_execution
 from .grid_service import grid_open_order_ids, initial_grid_orders, start_grid
-from .main import auth, csrf_valid
 from .models import Environment, GridBot, GridConfig, GridLevel, GridStatus
 
 router = APIRouter(prefix="/api/grid", tags=["grid"])
@@ -17,6 +16,8 @@ D = Decimal
 
 
 def guard(request: Request, csrf_token: str) -> None:
+    from .main import auth, csrf_valid
+
     if not auth(request):
         raise HTTPException(401, "Authentication required")
     if not csrf_valid(csrf_token, request):
@@ -113,6 +114,8 @@ def stop_grid_bot(request: Request, bot_id: int, csrf_token: str = Form(...), db
 
 @router.get("/bots/{bot_id}")
 def grid_status(request: Request, bot_id: int, db: Session = Depends(get_db)):
+    from .main import auth
+
     if not auth(request):
         from fastapi import HTTPException
         raise HTTPException(401, "Authentication required")
