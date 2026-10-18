@@ -18,7 +18,7 @@ def _last_price(adapter, symbol: str) -> D | None:
         raw = adapter.ticker(symbol)
         value = raw.get("last") if raw else None
         price = D(str(value)) if value is not None else ZERO
-        return price if price > ZERO else None
+        return price if price.is_finite() and price > ZERO else None
     except Exception:
         return None
 
@@ -50,6 +50,9 @@ def dashboard_metrics(
 
     for asset, amount_raw in totals.items():
         amount = D(str(amount_raw or "0"))
+        if not amount.is_finite():
+            unpriced_assets.append(asset)
+            continue
         if amount <= ZERO:
             continue
         conversion = _quote_to_usdt(adapter, asset)
@@ -94,6 +97,7 @@ def dashboard_metrics(
         "unpriced_assets": sorted(unpriced_assets),
         "realized_pnl_usdt": str(realized),
         "realized_pnl_complete": not realized_unpriced,
+        "realized_pnl_valuation_basis": "current_market_quote_conversion",
         "unpriced_realized_quotes": sorted(realized_unpriced),
         "unrealized_pnl_usdt": str(unrealized),
         "unrealized_pnl_complete": not unrealized_unpriced,
