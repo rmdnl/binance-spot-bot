@@ -37,6 +37,9 @@
     try {
       const d=await json('/api/account');
       renderMetrics(d.available ? d.metrics : null);
+      if (d.available && !d.metrics && d.metrics_error) {
+        metric('metric-equity', 'Unavailable', 'Valuation failed: ' + d.metrics_error);
+      }
       const section=document.createElement('section');
       section.className='panel';
       section.id='account';
@@ -45,6 +48,12 @@
       } else {
         const balances=d.balances||[], trades=d.trades||[];
         section.innerHTML=`<div class="section-heading"><div><p class="eyebrow">BINANCE ACCOUNT</p><h2>Balance & Recent Trades</h2><p class="muted">Read-only exchange snapshot. Equity and PNL are valued in USDT; unsupported assets are flagged rather than silently valued at zero.</p></div><span class="draft-chip">READ ONLY</span></div><div class="strategy-list">${balances.map(x=>`<article class="strategy-row"><div class="coin-icon">◈</div><div class="strategy-name"><b>${esc(x.asset)}</b><small>Free ${esc(x.free)} · Used ${esc(x.used)}</small></div><span class="state-chip">${esc(x.total)}</span></article>`).join('')||'<div class="empty-state"><b>No non-zero balances</b></div>'}</div><div class="deal-list">${trades.map(x=>`<article class="strategy-row"><div class="coin-icon">◷</div><div class="strategy-name"><b>${esc(x.symbol)}</b><small>${esc(x.side).toUpperCase()} · ${esc(x.amount)} @ ${esc(x.price)}</small></div><span class="muted">${esc(x.cost)}</span></article>`).join('')||'<div class="empty-state"><b>No recent trades</b></div>'}</div>`;
+      }
+      if (d.available && d.trades_error) {
+        const warning = document.createElement('p');
+        warning.className = 'muted';
+        warning.textContent = 'Recent trades unavailable: ' + d.trades_error;
+        section.appendChild(warning);
       }
       document.getElementById('account')?.remove();
       anchor.after(section);
