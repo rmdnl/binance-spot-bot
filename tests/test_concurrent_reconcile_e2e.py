@@ -4,6 +4,7 @@ from threading import Barrier
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import StaleDataError
 
 from spot_bot.inventory_service import apply_fill
 from spot_bot.models import Base, Environment, InventoryApplication, InventoryPosition, RealizedPNLEntry, SpotFill, SpotOrder
@@ -51,12 +52,19 @@ def test_concurrent_reconcile_same_order_does_not_duplicate_fill_or_accounting(t
     def worker():
         with Session(engine) as db:
             order = db.get(SpotOrder, order_id)
-            reconcile_order(db, ConcurrentAdapter(exchange_barrier), order)
-            db.commit()
+            try:
+                reconcile_order(db, ConcurrentAdapter(exchange_barrier), order)
+                db.commit()
+            except StaleDataError:
+                # Optimistic order versioning correctly rejects the stale
+                # reconcile write. Roll back that worker's transaction, then
+                # let it apply the fill already persisted by the winning worker.
+                db.rollback()
+
             fill = db.scalar(select(SpotFill).where(SpotFill.order_id == order_id))
             if fill:
-                # Both workers have loaded the same unapplied fill before either
-                # can claim it, forcing the inventory idempotency race.
+                # Both workers must observe the same unapplied fill before
+                # either claims it, preserving the inventory idempotency race.
                 apply_barrier.wait()
                 apply_fill(db, fill)
                 db.commit()
