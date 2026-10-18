@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from spot_bot import grid_api
+from spot_bot import main as main_module
 from spot_bot.main import app
 
 
@@ -28,8 +29,8 @@ GRID_ENDPOINTS = [
 
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setattr(grid_api, "auth", lambda _request: False)
-    monkeypatch.setattr(grid_api, "csrf_valid", lambda _token, _request: True)
+    monkeypatch.setattr(main_module, "auth", lambda _request: False)
+    monkeypatch.setattr(main_module, "csrf_valid", lambda _token, _request: True)
     monkeypatch.setattr(
         grid_api,
         "adapter_for",
@@ -56,8 +57,8 @@ def test_grid_mutations_reject_invalid_csrf_with_forbidden(
     path: str,
     data: dict[str, str],
 ) -> None:
-    monkeypatch.setattr(grid_api, "auth", lambda _request: True)
-    monkeypatch.setattr(grid_api, "csrf_valid", lambda _token, _request: False)
+    monkeypatch.setattr(main_module, "auth", lambda _request: True)
+    monkeypatch.setattr(main_module, "csrf_valid", lambda _token, _request: False)
 
     response = client.post(path, data=data)
 
