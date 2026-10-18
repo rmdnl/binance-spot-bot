@@ -125,12 +125,47 @@ def account(r: Request, db: Session = Depends(get_db)):
     require_auth(r)
     from .exchange import BinanceSpot
     try:
-        ex = BinanceSpot(Environment(settings.default_environment)); raw = ex.balance(); rows = []
+        environment = Environment(settings.default_environment)
+        ex = BinanceSpot(environment)
+        raw = ex.balance()
+        rows = []
         for asset, total in raw.get("total", {}).items():
-            if float(total or 0) > 0: rows.append({"asset": asset, "free": str(raw.get("free", {}).get(asset, 0)), "used": str(raw.get("used", {}).get(asset, 0)), "total": str(total)})
+            if float(total or 0) > 0:
+                rows.append({
+                    "asset": asset,
+                    "free": str(raw.get("free", {}).get(asset, 0)),
+                    "used": str(raw.get("used", {}).get(asset, 0)),
+                    "total": str(total),
+                })
+    except Exception as exc:
+        return {"available": False, "error": str(exc), "balances": [], "trades": []}
+
+    # Recent trade history is supplementary. A Binance trade-history timeout or
+    # permission error must not hide a successful balance snapshot or equity.
+    trades_error = None
+    try:
         trades = ex.recent_trades(limit=25)
-        return {"available": True, "balances": rows, "trades": trades, "metrics": dashboard_metrics(db, ex, Environment(settings.default_environment))}
-    except Exception as exc: return {"available": False, "error": str(exc), "balances": [], "trades": []}
+    except Exception as exc:
+        trades = []
+        trades_error = str(exc)
+
+    # Metrics have their own failure boundary too. Preserve the usable account
+    # snapshot if a market-data/database issue prevents PNL valuation.
+    metrics_error = None
+    try:
+        metrics = dashboard_metrics(db, ex, environment, balance_snapshot=raw)
+    except Exception as exc:
+        metrics = None
+        metrics_error = str(exc)
+
+    return {
+        "available": True,
+        "balances": rows,
+        "trades": trades,
+        "trades_error": trades_error,
+        "metrics": metrics,
+        "metrics_error": metrics_error,
+    }
 
 @app.get("/api/orders")
 def orders(r: Request, db: Session = Depends(get_db)):
