@@ -55,10 +55,9 @@ def insert_order(connection, environment, symbol, suffix):
     return result.lastrowid
 
 
-def insert_fill(connection, order_id, symbol, trade_id):
-    connection.execute(
-        text(
-            """
+def insert_fill(connection, order_id, symbol, trade_id, environment=None):
+    if environment is None:
+        statement = """
             INSERT INTO spot_fills (
                 order_id, symbol, side, price, amount, quote_amount, fee,
                 fee_currency, exchange_trade_id, timestamp
@@ -66,10 +65,25 @@ def insert_fill(connection, order_id, symbol, trade_id):
                 :order_id, :symbol, 'buy', 100, 0.01, 1, 0, 'USDT',
                 :trade_id, '2026-10-18 00:00:00'
             )
-            """
-        ),
-        {"order_id": order_id, "symbol": symbol, "trade_id": trade_id},
-    )
+        """
+        parameters = {"order_id": order_id, "symbol": symbol, "trade_id": trade_id}
+    else:
+        statement = """
+            INSERT INTO spot_fills (
+                order_id, environment, symbol, side, price, amount,
+                quote_amount, fee, fee_currency, exchange_trade_id, timestamp
+            ) VALUES (
+                :order_id, :environment, :symbol, 'buy', 100, 0.01, 1,
+                0, 'USDT', :trade_id, '2026-10-18 00:00:00'
+            )
+        """
+        parameters = {
+            "order_id": order_id,
+            "environment": environment,
+            "symbol": symbol,
+            "trade_id": trade_id,
+        }
+    connection.execute(text(statement), parameters)
 
 
 def test_trade_identity_migration_backfills_environment_and_scopes_unique_key(tmp_path):
@@ -110,8 +124,8 @@ def test_trade_identity_migration_backfills_environment_and_scopes_unique_key(tm
             connection, "testnet", "ETH/USDT", "testnet-eth"
         )
         live_btc = insert_order(connection, "live", "BTC/USDT", "live-btc-same-id")
-        insert_fill(connection, testnet_eth, "ETH/USDT", "trade-1")
-        insert_fill(connection, live_btc, "BTC/USDT", "trade-1")
+        insert_fill(connection, testnet_eth, "ETH/USDT", "trade-1", "testnet")
+        insert_fill(connection, live_btc, "BTC/USDT", "trade-1", "live")
 
         count = connection.execute(
             text("SELECT COUNT(*) FROM spot_fills WHERE exchange_trade_id = 'trade-1'")
