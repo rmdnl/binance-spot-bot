@@ -10,7 +10,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .exchange import BinanceSpot
-from .models import Environment, OrderRequest, OrderSide, OrderStatus, OrderType, SpotFill, SpotOrder
+from .models import (
+    Environment, InventoryApplication, OrderRequest, OrderSide,
+    OrderStatus, OrderType, SpotFill, SpotOrder,
+)
+from .inventory_service import apply_fill
 from .risk_service import assert_trading_allowed
 
 D = Decimal
@@ -133,35 +137,89 @@ def cancel_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrd
     return order
 
 def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
-    if not order.exchange_order_id:
-        return 0
-    trades = adapter.recent_trades(order.symbol, limit=100)
-    existing = set(db.scalars(select(SpotFill.exchange_trade_id).where(SpotFill.order_id == order.id)).all())
     count = 0
-    for trade in trades:
-        if str(trade.get("order")) != str(order.exchange_order_id):
-            continue
-        trade_id = str(trade.get("id")) if trade.get("id") is not None else None
-        if not trade_id or trade_id in existing:
-            continue
-        amount, price = D(str(trade.get("amount") or "0")), D(str(trade.get("price") or "0"))
-        if amount <= 0 or price <= 0:
-            continue
-        fee = trade.get("fee") or {}
-        fill = SpotFill(order_id=order.id, symbol=order.symbol, side=order.side, price=price, amount=amount, quote_amount=D(str(trade.get("cost") or amount * price)), fee=D(str(fee.get("cost") or "0")), fee_currency=str(fee.get("currency") or ""), exchange_trade_id=trade_id)
-        try:
-            with db.begin_nested():
-                db.add(fill)
-                db.flush()
-        except IntegrityError:
+
+    # Trade discovery may be unavailable for a local order without an exchange ID.
+    # Still process previously persisted, unapplied fills below.
+    if order.exchange_order_id:
+        trades = adapter.recent_trades(order.symbol, limit=100)
+        existing = set(
+            db.scalars(
+                select(SpotFill.exchange_trade_id).where(SpotFill.order_id == order.id)
+            ).all()
+        )
+        for trade in trades:
+            if str(trade.get("order")) != str(order.exchange_order_id):
+                continue
+            trade_id = str(trade.get("id")) if trade.get("id") is not None else None
+            if not trade_id or trade_id in existing:
+                continue
+
+            amount = D(str(trade.get("amount") or "0"))
+            price = D(str(trade.get("price") or "0"))
+            if amount <= 0 or price <= 0:
+                continue
+
+            fee = trade.get("fee") or {}
+            fill = SpotFill(
+                order_id=order.id,
+                symbol=order.symbol,
+                side=order.side,
+                price=price,
+                amount=amount,
+                quote_amount=D(str(trade.get("cost") or amount * price)),
+                fee=D(str(fee.get("cost") or "0")),
+                fee_currency=str(fee.get("currency") or ""),
+                exchange_trade_id=trade_id,
+            )
+            try:
+                with db.begin_nested():
+                    db.add(fill)
+                    db.flush()
+            except IntegrityError:
+                existing.add(trade_id)
+                continue
+
             existing.add(trade_id)
-            continue
-        existing.add(trade_id)
-        count += 1
+            count += 1
+
     db.flush()
+
     quote = order.symbol.split("/")[1]
-    fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
-    quote_fee = sum((D(str(fill.fee)).quantize(FEE_SCALE) for fill in fills if fill.fee_currency == quote), D("0"))
-    if fills:
+    order_fills = db.scalars(
+        select(SpotFill).where(SpotFill.order_id == order.id)
+    ).all()
+    if order_fills:
+        quote_fee = sum(
+            (
+                D(str(fill.fee)).quantize(FEE_SCALE)
+                for fill in order_fills
+                if fill.fee_currency.upper() == quote.upper()
+            ),
+            D("0"),
+        )
         order.fee_quote = quote_fee.quantize(FEE_SCALE)
+
+    # Recover any unapplied fill for this environment/pair, not only newly
+    # discovered fills. apply_fill is idempotent and shares the caller's
+    # transaction, so fill persistence and accounting commit or roll back together.
+    pending_fills = db.scalars(
+        select(SpotFill)
+        .join(SpotOrder, SpotOrder.id == SpotFill.order_id)
+        .outerjoin(
+            InventoryApplication,
+            InventoryApplication.fill_id == SpotFill.id,
+        )
+        .where(
+            SpotOrder.environment == order.environment,
+            SpotFill.symbol == order.symbol,
+            InventoryApplication.id.is_(None),
+        )
+        .order_by(SpotFill.timestamp, SpotFill.id)
+    ).all()
+
+    for fill in pending_fills:
+        apply_fill(db, fill)
+
+    db.flush()
     return count

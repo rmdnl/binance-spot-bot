@@ -316,7 +316,7 @@ def test_reconcile_twice_does_not_duplicate_fill_or_inventory_pnl():
 
     assert second.status == OrderStatus.FILLED.value
     assert len(fills_after) == 1
-    assert applied_first.applied is True
+    assert applied_first.applied is False
     assert applied_second.applied is False
     assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 1
     assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0

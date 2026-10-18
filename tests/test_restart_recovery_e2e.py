@@ -167,7 +167,7 @@ def test_restart_recovery_preserves_fill_accounting_when_exchange_order_already_
     assert len(fills) == 1
     first = apply_fill(db, fills[0])
     db.commit()
-    assert first.applied is True
+    assert first.applied is False
     assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 1
     assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0
 

@@ -105,19 +105,19 @@ def test_partial_fill_cancel_restart_reconcile_and_accounting_are_idempotent():
     db.commit()
     assert order.status == OrderStatus.CANCELED.value
     assert order.filled_amount == D("0.005")
-    assert counts(db) == {"fills": 1, "applications": 0, "pnl": 0}
+    assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
 
     # Simulate restart: terminal order is not submitted again, and reconciliation is safe.
     restarted = db.get(SpotOrder, order.id)
     assert restarted.status == OrderStatus.CANCELED.value
     assert record_fills(db, adapter, restarted) == 0
     db.commit()
-    assert counts(db) == {"fills": 1, "applications": 0, "pnl": 0}
+    assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
 
     fill = db.scalar(select(SpotFill).where(SpotFill.order_id == restarted.id))
     result = apply_fill(db, fill)
     db.commit()
-    assert result.applied is True
+    assert result.applied is False
     assert result.realized_pnl == D("0")
 
     # A later reconcile/replay must not create another fill or accounting application.

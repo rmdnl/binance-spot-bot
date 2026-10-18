@@ -182,7 +182,7 @@ def test_crash_matrix_filled_order_reconcile_is_idempotent():
     fill = db.scalar(select(SpotFill).where(SpotFill.order_id == order.id))
     assert recovered.order.status == OrderStatus.FILLED.value
     assert fill is not None
-    assert apply_fill(db, fill).applied is True
+    assert apply_fill(db, fill).applied is False
     db.commit()
 
     before = counts(db)
@@ -238,7 +238,7 @@ def test_crash_matrix_partial_fill_reconcile_then_second_reconcile_no_duplicate(
     record_fills(db, adapter, order)
     fill = db.scalar(select(SpotFill).where(SpotFill.order_id == order.id))
     assert fill.amount == D("0.005")
-    assert apply_fill(db, fill).applied is True
+    assert apply_fill(db, fill).applied is False
     db.commit()
 
     before = counts(db)
