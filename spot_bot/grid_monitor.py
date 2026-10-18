@@ -53,7 +53,9 @@ def monitor_grid_once(db: Session, bot: GridBot, adapter: BinanceSpot) -> dict:
                 continue
             target_id = target.buy_order_id if plan.side == OrderSide.BUY else target.sell_order_id
             target_order = db.get(SpotOrder, target_id) if target_id is not None else None
-            if target_order is not None and target_order.status in ACTIVE | {OrderStatus.FILLED.value} | TERMINAL:
+            if target_order is not None:
+                # Any linked order, including UNKNOWN, must be reconciled before
+                # considering replacement. Never duplicate an ambiguous order.
                 continue
             submit_grid_order(db, adapter, bot, plan)
             advanced += 1
