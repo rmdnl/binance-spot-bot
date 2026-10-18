@@ -1,5 +1,7 @@
 from decimal import Decimal as D
 
+import ccxt
+
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
@@ -30,6 +32,9 @@ class MonitorAdapter:
 
     def fetch_order(self, order_id, symbol):
         return self.orders[order_id]
+
+    def fetch_order_by_client_id(self, symbol, client_order_id):
+        raise ccxt.OrderNotFound(client_order_id)
 
     def recent_trades(self, symbol, limit=100):
         return []
