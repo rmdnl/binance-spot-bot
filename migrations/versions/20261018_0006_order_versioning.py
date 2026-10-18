@@ -14,18 +14,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Keep the server default so existing rows and any direct SQL inserts
+    # receive a valid version without requiring SQLite-specific table rebuilds.
     op.add_column(
         "spot_orders",
         sa.Column("version_id", sa.Integer(), nullable=False, server_default="1"),
-    )
-    # The server default is only needed to populate existing rows during
-    # migration. SQLAlchemy supplies version 1 for new ORM-created rows.
-    op.alter_column(
-        "spot_orders",
-        "version_id",
-        server_default=None,
-        existing_type=sa.Integer(),
-        existing_nullable=False,
     )
 
 
