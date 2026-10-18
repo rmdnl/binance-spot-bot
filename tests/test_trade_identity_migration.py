@@ -101,6 +101,53 @@ def test_explicit_alembic_config_url_overrides_database_url_environment(tmp_path
     decoy_engine.dispose()
 
 
+
+def test_custom_alembic_config_without_url_falls_back_to_database_url_environment(
+    tmp_path,
+):
+    environment_database = tmp_path / "environment-fallback.sqlite"
+    environment_url = f"sqlite:///{environment_database}"
+
+    config_content = (ROOT / "alembic.ini").read_text(encoding="utf-8")
+    config_content = config_content.replace(
+        "script_location = migrations",
+        f"script_location = {ROOT / 'migrations'}",
+    ).replace(
+        "prepend_sys_path = .",
+        f"prepend_sys_path = {ROOT}",
+    ).replace(
+        "sqlalchemy.url = sqlite:///./spot_bot.db\n",
+        "",
+    )
+    config_path = tmp_path / "custom-alembic-without-url.ini"
+    config_path.write_text(config_content, encoding="utf-8")
+
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = environment_url
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(config_path),
+            "upgrade",
+            "head",
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    engine = create_engine(environment_url)
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == "20261018_0005"
+    engine.dispose()
+
 def insert_order(connection, environment, symbol, suffix):
     result = connection.execute(
         text(
