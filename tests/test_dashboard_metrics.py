@@ -73,5 +73,6 @@ def test_dashboard_metrics_calculate_equity_and_pnl_and_flag_unpriced_assets():
     assert result["unpriced_assets"] == ["UNKNOWN"]
     assert D(result["realized_pnl_usdt"]) == D("8")
     assert result["realized_pnl_complete"] is True
+    assert result["realized_pnl_valuation_basis"] == "current_market_quote_conversion"
     assert D(result["unrealized_pnl_usdt"]) == D("400.0")
     assert result["unrealized_pnl_complete"] is True
