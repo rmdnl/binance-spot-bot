@@ -232,6 +232,18 @@ class GridLevel(Base):
     __table_args__ = (UniqueConstraint("bot_id", "level_index", name="uq_grid_level"),)
 
 
+class EquityHighWaterMark(Base):
+    """Durable per-environment equity high-water mark for drawdown math."""
+
+    __tablename__ = "equity_high_water_marks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    environment: Mapped[str] = mapped_column(String(10), nullable=False, unique=True, index=True)
+    current_equity: Mapped[D] = mapped_column(Numeric(38, 18), nullable=False)
+    peak_equity: Mapped[D] = mapped_column(Numeric(38, 18), nullable=False)
+    drawdown_pct: Mapped[D] = mapped_column(Numeric(18, 8), nullable=False, default=D("0"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
 class RiskState(Base):
     __tablename__ = "risk_state"
     id: Mapped[int] = mapped_column(primary_key=True, default=1)

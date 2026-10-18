@@ -23,7 +23,7 @@ from .config import get_settings
 from .db import get_db, init_db
 from .dashboard_metrics import dashboard_metrics
 from .grid import build_grid
-from .models import Environment, RealizedPNLEntry, RiskState, SpotOrder
+from .models import Environment, EquityHighWaterMark, RealizedPNLEntry, RiskState, SpotOrder
 
 BASE = Path(__file__).resolve().parent
 settings = get_settings()
@@ -192,17 +192,46 @@ def risk_status(r: Request, db: Session = Depends(get_db)):
         "metrics_available": False,
         "metrics_error": None,
     }
-    # Never present placeholder zeros as measured risk. Equity is sourced from
-    # the same USDT valuation used by Balance & PNL; drawdown remains unavailable
-    # until a durable peak-equity series exists. Daily PNL is calculated from
-    # UTC-day ledger entries and current quote-to-USDT conversions.
+    # Persist the high-water mark per environment so a process restart cannot
+    # reset drawdown. Only complete, positive equity valuations update the mark.
     try:
         from .exchange import BinanceSpot
         environment = Environment(settings.default_environment)
         adapter = BinanceSpot(environment)
         metrics = dashboard_metrics(db, adapter, environment)
         if metrics["equity_complete"]:
-            payload["equity_quote"] = metrics["equity_usdt"]
+            equity = Decimal(metrics["equity_usdt"])
+            payload["equity_quote"] = str(equity)
+            if equity > 0:
+                mark = db.scalar(select(EquityHighWaterMark).where(
+                    EquityHighWaterMark.environment == environment.value
+                ))
+                if mark is None:
+                    from sqlalchemy.exc import IntegrityError
+                    try:
+                        with db.begin_nested():
+                            mark = EquityHighWaterMark(
+                                environment=environment.value,
+                                current_equity=equity,
+                                peak_equity=equity,
+                                drawdown_pct=Decimal("0"),
+                            )
+                            db.add(mark)
+                            db.flush()
+                    except IntegrityError:
+                        mark = db.scalar(select(EquityHighWaterMark).where(
+                            EquityHighWaterMark.environment == environment.value
+                        ))
+                if mark is not None:
+                    mark.current_equity = equity
+                    if equity > Decimal(str(mark.peak_equity)):
+                        mark.peak_equity = equity
+                    peak = Decimal(str(mark.peak_equity))
+                    mark.drawdown_pct = max(Decimal("0"), (peak - equity) / peak * Decimal("100"))
+                    payload["drawdown_pct"] = str(mark.drawdown_pct)
+                    payload["peak_equity_quote"] = str(peak)
+                    db.flush()
+                    db.commit()
         payload["metrics_available"] = metrics["equity_complete"]
         now = datetime.now(UTC)
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)

@@ -118,3 +118,51 @@ def test_risk_status_never_reports_placeholder_zero_metrics(monkeypatch):
     assert payload["drawdown_pct"] is None
     assert payload["daily_realized_pnl_quote"] is None
     assert payload["metrics_available"] is False
+
+
+def test_risk_status_persists_peak_equity_and_calculates_drawdown(monkeypatch):
+    from decimal import Decimal
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
+    from spot_bot import main
+    from spot_bot.db import get_db
+    from spot_bot.models import Base, EquityHighWaterMark, Environment
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    values = iter(["100", "90", "110", "88"])
+
+    class FakeExchange:
+        def __init__(self, environment):
+            assert environment == Environment.TESTNET
+
+        def ticker(self, symbol):
+            return {"last": "1"}
+
+    monkeypatch.setattr(main, "require_auth", lambda request: None)
+    monkeypatch.setattr("spot_bot.exchange.BinanceSpot", FakeExchange)
+    monkeypatch.setattr(main, "dashboard_metrics", lambda *args, **kwargs: {
+        "equity_usdt": next(values), "equity_complete": True
+    })
+
+    with Session(engine) as db:
+        main.app.dependency_overrides[get_db] = lambda: db
+        try:
+            client = TestClient(main.app)
+            first = client.get("/api/risk/status").json()
+            second = client.get("/api/risk/status").json()
+            third = client.get("/api/risk/status").json()
+            fourth = client.get("/api/risk/status").json()
+            mark = db.scalar(select(EquityHighWaterMark).where(
+                EquityHighWaterMark.environment == Environment.TESTNET.value
+            ))
+        finally:
+            main.app.dependency_overrides.clear()
+
+    assert Decimal(first["drawdown_pct"]) == Decimal("0")
+    assert Decimal(second["drawdown_pct"]) == Decimal("10")
+    assert Decimal(third["drawdown_pct"]) == Decimal("0")
+    assert Decimal(fourth["drawdown_pct"]) == Decimal("20")
+    assert Decimal(str(mark.peak_equity)) == Decimal("110")
+    engine.dispose()
