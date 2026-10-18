@@ -5,7 +5,6 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, text
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -28,6 +27,78 @@ def run_migration(database_url, revision):
         capture_output=True,
         text=True,
     )
+
+
+def test_explicit_alembic_config_url_overrides_database_url_environment(tmp_path):
+    configured_database = tmp_path / "configured.sqlite"
+    environment_database = tmp_path / "environment.sqlite"
+    configured_url = f"sqlite:///{configured_database}"
+    environment_url = f"sqlite:///{environment_database}"
+
+    decoy_engine = create_engine(environment_url)
+    with decoy_engine.begin() as connection:
+        connection.execute(text("CREATE TABLE decoy_marker (value TEXT NOT NULL)"))
+        connection.execute(
+            text("INSERT INTO decoy_marker (value) VALUES ('untouched')")
+        )
+    decoy_engine.dispose()
+
+    config_content = (ROOT / "alembic.ini").read_text(encoding="utf-8")
+    config_content = config_content.replace(
+        "script_location = migrations",
+        f"script_location = {ROOT / 'migrations'}",
+    ).replace(
+        "prepend_sys_path = .",
+        f"prepend_sys_path = {ROOT}",
+    ).replace(
+        "sqlalchemy.url = sqlite:///./spot_bot.db",
+        f"sqlalchemy.url = {configured_url}",
+    )
+    config_path = tmp_path / "explicit-alembic.ini"
+    config_path.write_text(config_content, encoding="utf-8")
+
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = environment_url
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(config_path),
+            "upgrade",
+            "head",
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    configured_engine = create_engine(configured_url)
+    with configured_engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == "20261018_0005"
+        columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(spot_fills)"))
+        }
+        assert "environment" in columns
+    configured_engine.dispose()
+
+    decoy_engine = create_engine(environment_url)
+    with decoy_engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT value FROM decoy_marker")
+        ).scalar_one() == "untouched"
+        assert connection.execute(
+            text(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'alembic_version'"
+            )
+        ).scalar_one() == 0
+    decoy_engine.dispose()
 
 
 def insert_order(connection, environment, symbol, suffix):
