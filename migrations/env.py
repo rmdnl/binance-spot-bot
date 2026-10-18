@@ -25,13 +25,10 @@ def get_url() -> str:
         if config.config_file_name
         else None
     )
-    has_explicit_url = (
+    has_explicit_url = bool(configured_url) and (
         config.attributes.get("sqlalchemy_url_explicit", False)
         or (config_path is not None and config_path != default_config_path)
-        or (
-            configured_url
-            and configured_url != DEFAULT_ALEMBIC_URL
-        )
+        or configured_url != DEFAULT_ALEMBIC_URL
     )
     url = configured_url if has_explicit_url else settings.database_url
     return url.replace("sqlite+aiosqlite:///", "sqlite:///")
