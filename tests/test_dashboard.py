@@ -91,3 +91,17 @@ def test_account_keeps_balance_when_metrics_calculation_fails(monkeypatch):
     assert payload["trades"] == []
     assert payload["metrics"] is None
     assert "market data unavailable" in payload["metrics_error"]
+
+
+def test_risk_status_never_reports_placeholder_zero_metrics(monkeypatch):
+    from spot_bot import main
+
+    monkeypatch.setattr(main, "require_auth", lambda request: None)
+    response = TestClient(main.app).get("/api/risk/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["equity_quote"] is None
+    assert payload["drawdown_pct"] is None
+    assert payload["daily_realized_pnl_quote"] is None
+    assert payload["metrics_available"] is False
