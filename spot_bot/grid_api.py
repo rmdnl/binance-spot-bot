@@ -141,4 +141,31 @@ def grid_status(request: Request, bot_id: int, db: Session = Depends(get_db)):
         raise HTTPException(401, "Authentication required")
     bot = get_bot(db, bot_id)
     levels = db.scalars(select(GridLevel).where(GridLevel.bot_id == bot.id)).all()
-    return {"id": bot.id, "status": bot.status, "symbol": bot.symbol, "lower_price": str(bot.lower_price), "upper_price": str(bot.upper_price), "grids": bot.grids, "capital_quote": str(bot.capital_quote), "open_orders": grid_open_order_ids(db, bot), "levels": [{"index": x.level_index, "price": str(x.price), "buy_order_id": x.buy_order_id, "sell_order_id": x.sell_order_id} for x in levels]}
+    current_price = None
+    price_error = None
+    nearest_level = None
+    try:
+        ticker = adapter_for(bot).ticker(bot.symbol)
+        raw_price = ticker.get("last") or ticker.get("close")
+        if raw_price is not None and D(str(raw_price)) > 0:
+            current_price = D(str(raw_price))
+            if levels:
+                nearest = min(levels, key=lambda row: abs(D(str(row.price)) - current_price))
+                nearest_level = {
+                    "index": nearest.level_index,
+                    "price": str(nearest.price),
+                    "distance_pct": str(abs(D(str(nearest.price)) - current_price) / current_price * D("100")),
+                }
+    except Exception as exc:
+        price_error = str(exc)
+    return {
+        "id": bot.id, "status": bot.status, "symbol": bot.symbol,
+        "environment": bot.environment, "lower_price": str(bot.lower_price),
+        "upper_price": str(bot.upper_price), "grids": bot.grids,
+        "capital_quote": str(bot.capital_quote), "open_orders": grid_open_order_ids(db, bot),
+        "current_price": str(current_price) if current_price is not None else None,
+        "price_error": price_error, "nearest_level": nearest_level,
+        "levels": [{"index": x.level_index, "price": str(x.price),
+                    "buy_order_id": x.buy_order_id, "sell_order_id": x.sell_order_id}
+                   for x in levels],
+    }
