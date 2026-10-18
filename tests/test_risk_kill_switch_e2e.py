@@ -1,4 +1,5 @@
 from decimal import Decimal as D
+from typing import ClassVar
 
 import pytest
 from sqlalchemy import create_engine
@@ -48,7 +49,7 @@ def test_live_equity_drawdown_guard_persists_peak_and_halts_at_two_percent():
     from spot_bot.risk_service import enforce_equity_drawdown_limit
 
     class FakeExchange:
-        markets = {}
+        markets: ClassVar[dict] = {}
 
     class FakeAdapter:
         exchange = FakeExchange()
