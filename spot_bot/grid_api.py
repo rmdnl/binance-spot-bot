@@ -112,6 +112,26 @@ def stop_grid_bot(request: Request, bot_id: int, csrf_token: str = Form(...), db
     return {"id": bot.id, "status": bot.status, "canceled": len(canceled), "open_orders": grid_open_order_ids(db, bot)}
 
 
+@router.get("/bots")
+def list_grid_bots(request: Request, db: Session = Depends(get_db)):
+    from .main import auth
+
+    if not auth(request):
+        raise HTTPException(401, "Authentication required")
+    bots = db.scalars(select(GridBot).order_by(GridBot.updated_at.desc())).all()
+    return [{
+        "id": bot.id,
+        "status": bot.status,
+        "symbol": bot.symbol,
+        "environment": bot.environment,
+        "lower_price": str(bot.lower_price),
+        "upper_price": str(bot.upper_price),
+        "grids": bot.grids,
+        "capital_quote": str(bot.capital_quote),
+        "open_orders": grid_open_order_ids(db, bot),
+    } for bot in bots]
+
+
 @router.get("/bots/{bot_id}")
 def grid_status(request: Request, bot_id: int, db: Session = Depends(get_db)):
     from .main import auth
