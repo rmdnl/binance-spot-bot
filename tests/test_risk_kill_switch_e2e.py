@@ -89,7 +89,7 @@ def test_equity_drawdown_guard_blocks_order_when_valuation_is_incomplete():
     from spot_bot.risk_service import enforce_equity_drawdown_limit
 
     class FakeExchange:
-        markets = {}
+        markets: ClassVar[dict] = {}
 
     class FakeAdapter:
         exchange = FakeExchange()
