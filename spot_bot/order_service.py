@@ -113,6 +113,16 @@ def _map_status(status: str | None) -> str:
 
 def reconcile_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrder:
     if order.status not in ACTIVE:
+        # Terminal orders can still have trades that become visible after the
+        # cancel/fill response. The caller selects only candidates with a
+        # reported fill amount not yet represented by persisted fills.
+        if order.status in {
+            OrderStatus.FILLED.value,
+            OrderStatus.CANCELED.value,
+            OrderStatus.EXPIRED.value,
+        } and order.exchange_order_id:
+            record_fills(db, adapter, order)
+            db.flush()
         return order
     raw = adapter.fetch_order(order.exchange_order_id, order.symbol) if order.exchange_order_id else adapter.fetch_order_by_client_id(order.symbol, order.client_order_id)
     _apply_exchange_state(order, raw)
