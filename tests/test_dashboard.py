@@ -94,10 +94,22 @@ def test_account_keeps_balance_when_metrics_calculation_fails(monkeypatch):
 
 
 def test_risk_status_never_reports_placeholder_zero_metrics(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
     from spot_bot import main
+    from spot_bot.db import get_db
+    from spot_bot.models import Base
 
-    monkeypatch.setattr(main, "require_auth", lambda request: None)
-    response = TestClient(main.app).get("/api/risk/status")
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        main.app.dependency_overrides[get_db] = lambda: db
+        monkeypatch.setattr(main, "require_auth", lambda request: None)
+        try:
+            response = TestClient(main.app).get("/api/risk/status")
+        finally:
+            main.app.dependency_overrides.clear()
+    engine.dispose()
 
     assert response.status_code == 200
     payload = response.json()
