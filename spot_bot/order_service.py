@@ -16,7 +16,7 @@ from .models import (
     OrderStatus, OrderType, SpotFill, SpotOrder,
 )
 from .inventory_service import apply_fill
-from .risk_service import assert_trading_allowed
+from .risk_service import assert_trading_allowed, enforce_equity_drawdown_limit
 
 D = Decimal
 FEE_SCALE = D("0.00000001")
@@ -76,6 +76,7 @@ def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any], *, allow_reject
 
 def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False) -> SubmitResult:
     assert_trading_allowed(db)
+    enforce_equity_drawdown_limit(db, adapter, Environment(order.environment))
     if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
     request = OrderRequest(Environment(order.environment), order.symbol, OrderSide(order.side), OrderType(order.order_type), order.amount, order.price, order.client_order_id, post_only or order.order_type == OrderType.LIMIT_MAKER.value)
