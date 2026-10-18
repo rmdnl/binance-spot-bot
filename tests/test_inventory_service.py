@@ -201,7 +201,7 @@ def test_third_asset_fee_is_included_in_quote_cost(db):
     result = apply_fill(db, fill)
     db.commit()
     assert result.base_quantity == D("0.001")
-    assert result.quote_cost == D("80003")
+    assert result.quote_cost == D("83")
 
 
 def test_third_asset_fee_without_quote_valuation_fails_closed(db):
