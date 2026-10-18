@@ -52,9 +52,12 @@ def monitor_grid_once(db: Session, bot: GridBot, adapter: BinanceSpot) -> dict:
             db.refresh(bot)
             return {"bot_id": bot.id, "price": str(price), "reconciled": 0,
                     "advanced": 0, "status": bot.status}
+        # Keep the ARMED -> RUNNING transition in the same transaction as the
+        # first durable order intent. submit_grid_order commits that intent before
+        # the exchange call, so a competing monitor cannot race ahead of it.
+        submitted = execute_initial_grid(db, adapter, bot)
         db.commit()
         db.refresh(bot)
-        submitted = execute_initial_grid(db, adapter, bot)
         return {"bot_id": bot.id, "price": str(price), "trigger_price": str(trigger),
                 "reconciled": 0, "advanced": 0, "submitted": len(submitted),
                 "status": bot.status, "triggered": True}
