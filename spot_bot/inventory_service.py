@@ -107,13 +107,18 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
     if fee < ZERO:
         raise ValueError("fill fee cannot be negative")
 
-    existing = _existing_result(db, fill)
-    if existing is not None:
-        return existing
-
+    # Claim the unique fill application before reading accounting state. A
+    # read-first check lets two workers both observe "not applied" and then
+    # race while upgrading their database transactions to writers (notably on
+    # SQLite). The unique insert is the serialization point: exactly one
+    # transaction may proceed to mutate inventory; every other worker reads
+    # the committed result and returns without applying the fill again.
     if not _reserve_application(db, fill):
         existing = _existing_result(db, fill)
         if existing is None:
+            # Fail closed if the database cannot expose the winning transaction
+            # under its isolation level. Never guess that the fill is safe to
+            # apply a second time.
             raise RuntimeError("inventory fill claim lost without a visible application")
         return existing
 
