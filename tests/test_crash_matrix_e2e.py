@@ -157,19 +157,13 @@ def test_crash_matrix_exchange_accept_then_restart_recovers_without_duplicate():
     adapter.crash_after_create = True
     plan = initial_order_plans(bot, D("85000"))[0]
 
-    try:
-        submit_grid_order(db, adapter, bot, plan)
-    except ConnectionError:
-        db.rollback()
+    submitted = submit_grid_order(db, adapter, bot, plan)
+    db.commit()
 
     order = db.scalar(select(SpotOrder).order_by(SpotOrder.id.desc()))
-    assert order.status == OrderStatus.NEW.value
-    assert adapter.submissions == 1
-
-    recovered = recover_or_submit(db, adapter, order, post_only=True)
-    db.commit()
-    assert recovered.exchange is not None
-    assert recovered.order.exchange_order_id == "exchange-1"
+    assert order.status == OrderStatus.OPEN.value
+    assert submitted.order.exchange_order_id == "exchange-1"
+    assert submitted.exchange is not None
     assert adapter.submissions == 1
     assert counts(db) == {"fills": 0, "applications": 0, "pnl": 0}
 

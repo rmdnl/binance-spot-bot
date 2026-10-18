@@ -96,21 +96,14 @@ def test_restart_recovers_exchange_accepted_order_without_duplicate_submission()
     adapter = CrashAfterExchangeAdapter()
     plan = initial_order_plans(bot, D("85000"))[0]
 
-    try:
-        submit_grid_order(db, adapter, bot, plan)
-    except ConnectionError:
-        db.rollback()
+    submitted = submit_grid_order(db, adapter, bot, plan)
+    db.commit()
 
     order = db.scalar(select(SpotOrder).order_by(SpotOrder.id.desc()))
     assert order is not None
-    assert order.status == OrderStatus.NEW.value
-    assert len(adapter.submissions) == 1
-
-    recovered = recover_or_submit(db, adapter, order, post_only=True)
-    db.commit()
-
-    assert recovered.exchange is not None
-    assert recovered.order.exchange_order_id == "exchange-1"
+    assert order.status == OrderStatus.OPEN.value
+    assert submitted.exchange is not None
+    assert submitted.order.exchange_order_id == "exchange-1"
     assert len(adapter.submissions) == 1
     assert adapter.recovery_lookups == 2
 

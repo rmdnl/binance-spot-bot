@@ -83,8 +83,22 @@ def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only:
         adapter.validate_order(request)
         raw = adapter.create_order(request)
     except Exception as exc:
-        order.status = OrderStatus.REJECTED.value
-        order.error_message = str(exc)[:500]
+        # A transport failure after submission is ambiguous: the exchange may
+        # have accepted the order even though this process never received its
+        # response. Keep the durable intent retryable so recovery can query by
+        # client_order_id instead of treating the order as definitely rejected.
+        ambiguous = isinstance(
+            exc,
+            (
+                ccxt.NetworkError,
+                ccxt.RequestTimeout,
+                ccxt.ExchangeNotAvailable,
+                ccxt.DDoSProtection,
+            ),
+        )
+        if not ambiguous:
+            order.status = OrderStatus.REJECTED.value
+            order.error_message = str(exc)[:500]
         db.flush()
         raise
     _apply_exchange_state(order, raw, allow_rejected_retry=retrying_rejected)
@@ -106,7 +120,32 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
         record_fills(db, adapter, order)
         db.flush()
         return SubmitResult(order, existing)
-    return submit_order(db, adapter, order, post_only)
+
+    try:
+        return submit_order(db, adapter, order, post_only)
+    except Exception:
+        # Another worker may have submitted this same durable intent after our
+        # first lookup, or the exchange may have accepted our request before a
+        # timeout/connection loss. Re-check the stable client ID before exposing
+        # the submit error to callers; never issue a second blind submission.
+        try:
+            existing = adapter.fetch_order_by_client_id(order.symbol, order.client_order_id)
+        except Exception:
+            # The original submission result remains authoritative for the
+            # caller. A future reconcile/restart can safely retry the lookup.
+            existing = None
+
+        if not existing:
+            raise
+
+        _apply_exchange_state(
+            order,
+            existing,
+            allow_rejected_retry=order.status == OrderStatus.REJECTED.value,
+        )
+        record_fills(db, adapter, order)
+        db.flush()
+        return SubmitResult(order, existing)
 
 def _map_status(status: str | None) -> str:
     return {"new": OrderStatus.NEW.value, "open": OrderStatus.OPEN.value, "closed": OrderStatus.FILLED.value, "canceled": OrderStatus.CANCELED.value, "expired": OrderStatus.EXPIRED.value, "rejected": OrderStatus.REJECTED.value, "partially_filled": OrderStatus.PARTIALLY_FILLED.value}.get((status or "").lower(), OrderStatus.UNKNOWN.value)

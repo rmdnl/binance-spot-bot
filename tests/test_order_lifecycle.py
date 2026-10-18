@@ -63,6 +63,52 @@ class FakeAdapter:
         return self.trades
 
 
+
+class AmbiguousSubmitAdapter(FakeAdapter):
+    """Exchange accepts the order but the client loses the response."""
+
+    def __init__(self):
+        super().__init__()
+        self.lookup_calls = 0
+
+    def fetch_order_by_client_id(self, symbol, client_id):
+        self.lookup_calls += 1
+        if self.lookup_calls == 1:
+            raise ccxt.OrderNotFound("not found before submit")
+        if self.existing is None:
+            raise ccxt.OrderNotFound("not found after ambiguous submit")
+        return self.existing
+
+    def create_order(self, request):
+        self.submissions += 1
+        self.existing = {
+            "id": "accepted-before-timeout",
+            "clientOrderId": request.client_order_id,
+            "symbol": request.symbol,
+            "status": "open",
+            "filled": "0",
+            "average": None,
+        }
+        raise ccxt.RequestTimeout("exchange accepted order but response timed out")
+
+
+
+class DuplicateSubmitAdapter(AmbiguousSubmitAdapter):
+    """A concurrent worker already created the order with this client ID."""
+
+    def create_order(self, request):
+        self.submissions += 1
+        self.existing = {
+            "id": "accepted-by-other-worker",
+            "clientOrderId": request.client_order_id,
+            "symbol": request.symbol,
+            "status": "open",
+            "filled": "0",
+            "average": None,
+        }
+        raise ccxt.DuplicateOrder("client order ID already exists")
+
+
 def db_session():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -114,6 +160,37 @@ def test_recovery_uses_existing_order_and_does_not_resubmit():
     assert result.order.exchange_order_id == "999"
     assert result.order.status == OrderStatus.OPEN.value
     assert adapter.submissions == 0
+
+
+
+def test_ambiguous_submit_recovers_accepted_order_without_duplicate_submission():
+    db = db_session()
+    order = make_order(db)
+    db.commit()
+    adapter = AmbiguousSubmitAdapter()
+
+    result = recover_or_submit(db, adapter, order)
+
+    assert result.order.exchange_order_id == "accepted-before-timeout"
+    assert result.order.status == OrderStatus.OPEN.value
+    assert adapter.submissions == 1
+    assert adapter.lookup_calls == 2
+    assert result.order.error_message is None
+
+
+
+def test_concurrent_duplicate_client_id_recovers_existing_exchange_order():
+    db = db_session()
+    order = make_order(db)
+    db.commit()
+    adapter = DuplicateSubmitAdapter()
+
+    result = recover_or_submit(db, adapter, order)
+
+    assert result.order.exchange_order_id == "accepted-by-other-worker"
+    assert result.order.status == OrderStatus.OPEN.value
+    assert adapter.submissions == 1
+    assert adapter.lookup_calls == 2
 
 
 def test_unknown_lookup_error_fails_closed_without_resubmit():
