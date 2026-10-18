@@ -286,7 +286,7 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
             fee_symbol = f"{fee_currency}/{quote_asset}"
             ticker = adapter.ticker(fee_symbol)
             last = ticker.get("last") if ticker else None
-            if last is None or D(str(last)) <= 0:
+            if last is None or not D(str(last)).is_finite() or D(str(last)) <= 0:
                 raise RuntimeError(f"cannot value third-asset fee {fee_currency} in {quote_asset}")
             fill.fee_quote_value = D(str(fill.fee)) * D(str(last))
             db.flush()
