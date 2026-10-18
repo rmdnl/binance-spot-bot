@@ -9,7 +9,8 @@ from spot_bot.models import Base, Environment, InventoryPosition, RealizedPNLEnt
 
 
 class FakeExchange:
-    markets = {"BTC/USDT": {}, "BNB/USDT": {}}
+    def __init__(self):
+        self.markets = {"BTC/USDT": {}, "BNB/USDT": {}}
 
 
 class FakeAdapter:
