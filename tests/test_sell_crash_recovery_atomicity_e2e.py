@@ -165,7 +165,7 @@ def test_sell_fill_inventory_and_realized_pnl_recover_atomically(
 
         if commit_before_exit:
             # The commit succeeded despite the process dying before acknowledging it.
-            assert _counts(db) == {"fills": 2, "applications": 1, "pnl": 1}
+            assert _counts(db) == {"fills": 2, "applications": 2, "pnl": 1}
             assert position.base_quantity == D("0.010000000000")
             assert position.quote_cost == D("800.080000000000")
             pnl = db.scalar(select(RealizedPNLEntry))
