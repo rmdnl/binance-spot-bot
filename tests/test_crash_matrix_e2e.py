@@ -446,3 +446,91 @@ def test_crash_matrix_real_process_death_then_restart_replays_once(tmp_path):
         assert position.quote_cost == D("800.080000000000")
 
     engine.dispose()
+
+
+
+def test_crash_matrix_partial_fill_resume_after_fresh_session_applies_only_new_trade(tmp_path):
+    database_path = tmp_path / "partial-fill-resume.sqlite"
+    database_url = f"sqlite:///{database_path}"
+    engine = sqlite_engine(database_url)
+    Base.metadata.create_all(engine)
+
+    first_trade = {
+        "id": "trade-partial-resume-1",
+        "order": "exchange-partial-resume-1",
+        "amount": "0.005",
+        "price": "80000",
+        "cost": "400",
+        "fee": {"cost": "0.04", "currency": "USDT"},
+    }
+    second_trade = {
+        "id": "trade-partial-resume-2",
+        "order": "exchange-partial-resume-1",
+        "amount": "0.005",
+        "price": "80000",
+        "cost": "400",
+        "fee": {"cost": "0.04", "currency": "USDT"},
+    }
+
+    with Session(engine) as db:
+        make_position(db)
+        order = SpotOrder(
+            environment=Environment.TESTNET.value,
+            symbol="BTC/USDT",
+            side="buy",
+            order_type="limit",
+            status=OrderStatus.NEW.value,
+            amount=D("0.01"),
+            price=D("80000"),
+            client_order_id="partial-resume-001",
+            exchange_order_id="exchange-partial-resume-1",
+        )
+        db.add(order)
+        db.commit()
+
+        # The first partial fill is durable before the simulated restart.
+        adapter = CrashMatrixAdapter(trades=[first_trade])
+        assert record_fills(db, adapter, order) == 1
+        db.commit()
+        assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
+
+    engine.dispose()
+
+    # New engine and session represent the restarted process. The exchange now
+    # reports both the original trade and a newly executed partial-fill trade.
+    engine = sqlite_engine(database_url)
+    with Session(engine) as db:
+        order = db.scalar(
+            select(SpotOrder).where(
+                SpotOrder.client_order_id == "partial-resume-001"
+            )
+        )
+        position = db.scalar(
+            select(InventoryPosition).where(
+                InventoryPosition.environment == Environment.TESTNET.value,
+                InventoryPosition.symbol == "BTC/USDT",
+            )
+        )
+        assert order is not None
+        assert position.base_quantity == D("0.005000000000")
+        assert position.quote_cost == D("400.040000000000")
+
+        adapter = CrashMatrixAdapter(trades=[first_trade, second_trade])
+        assert record_fills(db, adapter, order) == 1
+        db.commit()
+
+        assert counts(db) == {"fills": 2, "applications": 2, "pnl": 0}
+        db.refresh(position)
+        assert position.base_quantity == D("0.010000000000")
+        assert position.quote_cost == D("800.080000000000")
+
+        # Another reconciliation must neither duplicate the old trade nor
+        # reapply the newly discovered one.
+        assert record_fills(db, adapter, order) == 0
+        db.commit()
+        assert counts(db) == {"fills": 2, "applications": 2, "pnl": 0}
+        db.refresh(position)
+        assert position.base_quantity == D("0.010000000000")
+        assert position.quote_cost == D("800.080000000000")
+
+    engine.dispose()
