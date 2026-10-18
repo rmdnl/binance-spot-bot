@@ -26,7 +26,7 @@
     metric('metric-coverage', m.equity_complete ? 'Complete' : 'Partial',
       m.unpriced_assets?.length ? 'Unpriced: ' + m.unpriced_assets.join(', ') : 'All non-zero balances have a USDT valuation');
     metric('metric-realized', (m.realized_pnl_complete ? '' : '~ ') + usdt(m.realized_pnl_usdt),
-      m.realized_pnl_complete ? 'Ledger PNL converted at current quote-to-USDT prices, not historical FX' : 'Some quote currencies could not be converted to USDT');
+      m.realized_pnl_complete ? 'Ledger PNL uses current quote-to-USDT prices; third-token fees are valued at ingestion, not historical FX' : 'Partial: unpriced quote currency or third-token fee valuation');
     metric('metric-unrealized', (m.unrealized_pnl_complete ? '' : '~ ') + usdt(m.unrealized_pnl_usdt),
       m.unrealized_pnl_complete ? 'Open inventory marked to current market prices' : 'Some open positions could not be valued');
   }
