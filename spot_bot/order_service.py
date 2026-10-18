@@ -123,7 +123,7 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
 
     try:
         return submit_order(db, adapter, order, post_only)
-    except Exception as submit_error:
+    except Exception:
         # Another worker may have submitted this same durable intent after our
         # first lookup, or the exchange may have accepted our request before a
         # timeout/connection loss. Re-check the stable client ID before exposing
@@ -133,10 +133,10 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
         except Exception:
             # The original submission result remains authoritative for the
             # caller. A future reconcile/restart can safely retry the lookup.
-            raise submit_error
+            existing = None
 
         if not existing:
-            raise submit_error
+            raise
 
         _apply_exchange_state(
             order,
