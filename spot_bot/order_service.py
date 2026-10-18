@@ -83,8 +83,22 @@ def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only:
         adapter.validate_order(request)
         raw = adapter.create_order(request)
     except Exception as exc:
-        order.status = OrderStatus.REJECTED.value
-        order.error_message = str(exc)[:500]
+        # A transport failure after submission is ambiguous: the exchange may
+        # have accepted the order even though this process never received its
+        # response. Keep the durable intent retryable so recovery can query by
+        # client_order_id instead of treating the order as definitely rejected.
+        ambiguous = isinstance(
+            exc,
+            (
+                ccxt.NetworkError,
+                ccxt.RequestTimeout,
+                ccxt.ExchangeNotAvailable,
+                ccxt.DDoSProtection,
+            ),
+        )
+        if not ambiguous:
+            order.status = OrderStatus.REJECTED.value
+            order.error_message = str(exc)[:500]
         db.flush()
         raise
     _apply_exchange_state(order, raw, allow_rejected_retry=retrying_rejected)
