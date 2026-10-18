@@ -179,8 +179,32 @@ def grid_preview(r: Request, symbol: str, lower_price: str, upper_price: str, gr
 
 @app.get("/api/risk/status")
 def risk_status(r: Request, db: Session = Depends(get_db)):
-    require_auth(r); state = db.get(RiskState, 1)
-    return {"status": "halted" if state and state.halted else "ready", "equity_quote": "0", "drawdown_pct": "0", "daily_realized_pnl_quote": "0", "reason": state.reason if state else None}
+    require_auth(r)
+    state = db.get(RiskState, 1)
+    payload = {
+        "status": "halted" if state and state.halted else "ready",
+        "equity_quote": None,
+        "drawdown_pct": None,
+        "daily_realized_pnl_quote": None,
+        "reason": state.reason if state else None,
+        "metrics_available": False,
+        "metrics_error": None,
+    }
+    # Never present placeholder zeros as measured risk. Equity is sourced from
+    # the same USDT valuation used by Balance & PNL; drawdown remains unavailable
+    # until a durable peak-equity series exists, and daily PNL until its own
+    # timezone-aware projection is implemented.
+    try:
+        from .exchange import BinanceSpot
+        environment = Environment(settings.default_environment)
+        adapter = BinanceSpot(environment)
+        metrics = dashboard_metrics(db, adapter, environment)
+        if metrics["equity_complete"]:
+            payload["equity_quote"] = metrics["equity_usdt"]
+        payload["metrics_available"] = metrics["equity_complete"]
+    except Exception as exc:
+        payload["metrics_error"] = str(exc)
+    return payload
 
 from .trading_routes import register_trading_routes
 register_trading_routes(app)
