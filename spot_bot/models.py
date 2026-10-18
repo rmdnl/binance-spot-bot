@@ -122,7 +122,7 @@ class SpotOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
     fills: Mapped[list["SpotFill"]] = relationship(back_populates="order", cascade="all, delete-orphan")
 
-    __mapper_args__ = {"version_id_col": version_id}
+    __mapper_args__ = {"version_id_col": version_id}  # noqa: RUF012
 
 
 class SpotFill(Base):
