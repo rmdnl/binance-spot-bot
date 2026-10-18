@@ -139,3 +139,124 @@ def test_sell_pnl_survives_process_death_and_replay_is_idempotent(tmp_path):
         ) == D("2.835000000000")
 
     engine.dispose()
+
+
+def _sell_fill_then_apply_and_die_before_commit(database_url):
+    # Simulate an abrupt process death after the fill and its accounting have
+    # been flushed, but before the caller transaction commits.
+    engine = create_engine(database_url)
+    with Session(engine) as db:
+        order = db.scalar(
+            select(SpotOrder).where(
+                SpotOrder.client_order_id == "pnl-crash-precommit-001"
+            )
+        )
+        assert order is not None
+        fill = SpotFill(
+            order_id=order.id,
+            symbol="BTC/USDT",
+            side="sell",
+            price=D("84000"),
+            amount=D("0.001"),
+            quote_amount=D("84"),
+            fee=D("0.084"),
+            fee_currency="USDT",
+            exchange_trade_id="trade-pnl-crash-precommit-001",
+        )
+        db.add(fill)
+        db.flush()
+        result = apply_fill(db, fill)
+        assert result.applied is True
+        # No commit: os._exit bypasses Session cleanup and simulates a hard kill.
+        os._exit(74)
+
+
+def test_uncommitted_fill_and_accounting_roll_back_together_after_crash(tmp_path):
+    database_path = tmp_path / "sell-pnl-precommit-crash.sqlite"
+    database_url = f"sqlite:///{database_path}"
+    engine = create_engine(database_url)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as db:
+        position = InventoryPosition(
+            environment=Environment.TESTNET.value,
+            symbol="BTC/USDT",
+            base_asset="BTC",
+            quote_asset="USDT",
+            base_quantity=D("0.002"),
+            quote_cost=D("162.162"),
+        )
+        order = SpotOrder(
+            environment=Environment.TESTNET.value,
+            symbol="BTC/USDT",
+            side="sell",
+            order_type="limit",
+            status="filled",
+            amount=D("0.001"),
+            price=D("84000"),
+            filled_amount=D("0.001"),
+            client_order_id="pnl-crash-precommit-001",
+            exchange_order_id="exchange-pnl-crash-precommit-001",
+        )
+        db.add_all([position, order])
+        db.commit()
+    engine.dispose()
+
+    process = multiprocessing.get_context("fork").Process(
+        target=_sell_fill_then_apply_and_die_before_commit,
+        args=(database_url,),
+    )
+    process.start()
+    process.join(timeout=10)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+        raise AssertionError("pre-commit crash worker did not exit within 10 seconds")
+    assert process.exitcode == 74
+
+    engine = create_engine(database_url)
+    with Session(engine) as db:
+        position = db.scalar(
+            select(InventoryPosition).where(
+                InventoryPosition.environment == Environment.TESTNET.value,
+                InventoryPosition.symbol == "BTC/USDT",
+            )
+        )
+        assert position is not None
+        assert db.scalar(select(func.count()).select_from(SpotFill)) == 0
+        assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 0
+        assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0
+        assert position.base_quantity == D("0.002")
+        assert position.quote_cost == D("162.162")
+
+        # A retry after restart can persist and apply the exchange trade once.
+        order = db.scalar(
+            select(SpotOrder).where(
+                SpotOrder.client_order_id == "pnl-crash-precommit-001"
+            )
+        )
+        fill = SpotFill(
+            order_id=order.id,
+            symbol="BTC/USDT",
+            side="sell",
+            price=D("84000"),
+            amount=D("0.001"),
+            quote_amount=D("84"),
+            fee=D("0.084"),
+            fee_currency="USDT",
+            exchange_trade_id="trade-pnl-crash-precommit-001",
+        )
+        db.add(fill)
+        db.flush()
+        result = apply_fill(db, fill)
+        db.commit()
+
+        assert result.applied is True
+        assert db.scalar(select(func.count()).select_from(SpotFill)) == 1
+        assert db.scalar(select(func.count()).select_from(InventoryApplication)) == 1
+        assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 1
+        db.refresh(position)
+        assert position.base_quantity == D("0.001000000000")
+        assert position.quote_cost == D("81.081000000000")
+
+    engine.dispose()
