@@ -18,7 +18,7 @@ class ReconcileSummary:
 
 
 def reconcile_open_orders(db: Session, environment: Environment, symbol: str | None = None) -> ReconcileSummary:
-    stmt = select(SpotOrder).where(
+    active_stmt = select(SpotOrder).where(
         SpotOrder.environment == environment.value,
         SpotOrder.status.in_([
             OrderStatus.NEW.value,
@@ -27,11 +27,35 @@ def reconcile_open_orders(db: Session, environment: Environment, symbol: str | N
         ]),
     )
     if symbol:
-        stmt = stmt.where(SpotOrder.symbol == symbol)
-    orders = db.scalars(stmt).all()
+        active_stmt = active_stmt.where(SpotOrder.symbol == symbol)
+    active_orders = db.scalars(active_stmt).all()
+
+    # Terminal status can arrive before the exchange exposes its final trades.
+    # Revisit only terminal orders whose reported filled amount exceeds the
+    # amount of fills persisted locally, avoiding a broad terminal-order scan.
+    persisted_amount = (
+        select(func.coalesce(func.sum(SpotFill.amount), 0))
+        .where(SpotFill.order_id == SpotOrder.id)
+        .correlate(SpotOrder)
+        .scalar_subquery()
+    )
+    terminal_stmt = select(SpotOrder).where(
+        SpotOrder.environment == environment.value,
+        SpotOrder.status.in_([
+            OrderStatus.FILLED.value,
+            OrderStatus.CANCELED.value,
+            OrderStatus.EXPIRED.value,
+        ]),
+        SpotOrder.exchange_order_id.is_not(None),
+        SpotOrder.filled_amount > persisted_amount,
+    )
+    if symbol:
+        terminal_stmt = terminal_stmt.where(SpotOrder.symbol == symbol)
+    terminal_orders = db.scalars(terminal_stmt).all()
+
     adapter = BinanceSpot(environment)
     changed = fills = 0
-    for order in orders:
+    for order in [*active_orders, *terminal_orders]:
         before_status = order.status
         before_count = db.scalar(
             select(func.count()).select_from(SpotFill).where(SpotFill.order_id == order.id)
@@ -43,4 +67,4 @@ def reconcile_open_orders(db: Session, environment: Environment, symbol: str | N
         fills += max(0, after_count - before_count)
         changed += order.status != before_status
     db.commit()
-    return ReconcileSummary(len(orders), changed, fills)
+    return ReconcileSummary(len(active_orders) + len(terminal_orders), changed, fills)
