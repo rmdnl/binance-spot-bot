@@ -137,6 +137,9 @@ class SpotFill(Base):
     quote_amount: Mapped[D] = mapped_column(Numeric(38, 18))
     fee: Mapped[D] = mapped_column(Numeric(38, 18), default=D("0"))
     fee_currency: Mapped[str] = mapped_column(String(20), default="")
+    # Fee converted to the symbol quote asset when the fill is ingested.
+    # Required for fees paid in a third asset (e.g. BNB on BTC/USDT).
+    fee_quote_value: Mapped[D | None] = mapped_column(Numeric(38, 18), nullable=True)
     exchange_trade_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     order: Mapped[SpotOrder] = relationship(back_populates="fills")

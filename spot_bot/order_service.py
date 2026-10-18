@@ -227,6 +227,7 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
                 quote_amount=D(str(trade.get("cost") or amount * price)),
                 fee=D(str(fee.get("cost") or "0")),
                 fee_currency=str(fee.get("currency") or ""),
+                fee_quote_value=None,
                 exchange_trade_id=trade_id,
             )
             try:
@@ -276,6 +277,19 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
     ).all()
 
     for fill in pending_fills:
+        fee_currency = (fill.fee_currency or "").upper()
+        base, quote_asset = (part.upper() for part in fill.symbol.split("/", 1))
+        if D(str(fill.fee or "0")) > 0 and fee_currency not in {base, quote_asset} and fill.fee_quote_value is None:
+            # The fee currency conversion is captured at ingestion/recovery time.
+            # If the market is unavailable, fail the transaction and retry later
+            # rather than silently omitting a real trading cost from PNL.
+            fee_symbol = f"{fee_currency}/{quote_asset}"
+            ticker = adapter.ticker(fee_symbol)
+            last = ticker.get("last") if ticker else None
+            if last is None or not D(str(last)).is_finite() or D(str(last)) <= 0:
+                raise RuntimeError(f"cannot value third-asset fee {fee_currency} in {quote_asset}")
+            fill.fee_quote_value = D(str(fill.fee)) * D(str(last))
+            db.flush()
         apply_fill(db, fill)
 
     db.flush()

@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import Environment, InventoryPosition, RealizedPNLEntry
+from .models import Environment, InventoryPosition, RealizedPNLEntry, SpotFill
 
 D = Decimal
 ZERO = D("0")
@@ -18,7 +18,7 @@ def _last_price(adapter, symbol: str) -> D | None:
         raw = adapter.ticker(symbol)
         value = raw.get("last") if raw else None
         price = D(str(value)) if value is not None else ZERO
-        return price if price > ZERO else None
+        return price if price.is_finite() and price > ZERO else None
     except Exception:
         return None
 
@@ -50,6 +50,9 @@ def dashboard_metrics(
 
     for asset, amount_raw in totals.items():
         amount = D(str(amount_raw or "0"))
+        if not amount.is_finite():
+            unpriced_assets.append(asset)
+            continue
         if amount <= ZERO:
             continue
         conversion = _quote_to_usdt(adapter, asset)
@@ -57,6 +60,21 @@ def dashboard_metrics(
             unpriced_assets.append(asset)
             continue
         equity += amount * conversion
+
+    # Old fills that paid a third-token fee without a persisted quote valuation
+    # cannot be reconstructed exactly from current prices. Flag PNL as partial
+    # instead of pretending those historical costs were zero.
+    unvalued_third_fee_fill_ids: list[int] = []
+    fills = db.scalars(select(SpotFill).where(SpotFill.environment == environment.value)).all()
+    for fill in fills:
+        try:
+            base, quote = fill.symbol.upper().split("/", 1)
+        except ValueError:
+            unvalued_third_fee_fill_ids.append(fill.id)
+            continue
+        fee_currency = (fill.fee_currency or "").upper()
+        if D(str(fill.fee or "0")) > ZERO and fee_currency not in {base, quote} and fill.fee_quote_value is None:
+            unvalued_third_fee_fill_ids.append(fill.id)
 
     realized = ZERO
     realized_unpriced: set[str] = set()
@@ -93,9 +111,11 @@ def dashboard_metrics(
         "equity_complete": not unpriced_assets,
         "unpriced_assets": sorted(unpriced_assets),
         "realized_pnl_usdt": str(realized),
-        "realized_pnl_complete": not realized_unpriced,
+        "realized_pnl_complete": not realized_unpriced and not unvalued_third_fee_fill_ids,
+        "unvalued_third_fee_fill_ids": sorted(unvalued_third_fee_fill_ids),
+        "realized_pnl_valuation_basis": "current_market_quote_conversion",
         "unpriced_realized_quotes": sorted(realized_unpriced),
         "unrealized_pnl_usdt": str(unrealized),
-        "unrealized_pnl_complete": not unrealized_unpriced,
+        "unrealized_pnl_complete": not unrealized_unpriced and not unvalued_third_fee_fill_ids,
         "unpriced_positions": sorted(unrealized_unpriced),
     }

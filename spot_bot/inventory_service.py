@@ -126,13 +126,18 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
     _, quote = _assets(fill.symbol)
     fee_currency = (fill.fee_currency or "").upper()
     base_asset = position.base_asset.upper()
+    quote_asset = position.quote_asset.upper()
+    third_asset_fee = fee > ZERO and fee_currency not in {base_asset, quote_asset}
+    if third_asset_fee and fill.fee_quote_value is None:
+        raise RuntimeError("third-asset fee has no quote-currency valuation; refusing incomplete accounting")
+    fee_quote_value = _decimal(fill.fee_quote_value or ZERO)
     realized = ZERO
 
     if fill.side.lower() == "buy":
         base_received = amount - fee if fee_currency == base_asset else amount
         if base_received < ZERO:
             raise ValueError("base-asset fee exceeds bought amount")
-        cost = quote_amount + fee if fee_currency == quote else quote_amount
+        cost = quote_amount + (fee if fee_currency == quote else fee_quote_value if third_asset_fee else ZERO)
         position.base_quantity = _decimal(position.base_quantity) + base_received
         position.quote_cost = _decimal(position.quote_cost) + cost
     elif fill.side.lower() == "sell":
@@ -142,7 +147,7 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
         if base_sold > current_qty:
             raise ValueError("sell fill exceeds available inventory")
         released_cost = ZERO if current_qty == ZERO else _decimal(current_cost * base_sold / current_qty)
-        proceeds = _decimal(quote_amount - fee) if fee_currency == quote else quote_amount
+        proceeds = _decimal(quote_amount - (fee if fee_currency == quote else fee_quote_value if third_asset_fee else ZERO))
         if proceeds < ZERO:
             raise ValueError("quote-asset fee exceeds sell proceeds")
         position.base_quantity = _decimal(current_qty - base_sold)
@@ -155,7 +160,7 @@ def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
             quantity=base_sold,
             entry_cost=released_cost,
             proceeds=proceeds,
-            fees=fee if fee_currency == quote else ZERO,
+            fees=fee if fee_currency == quote else fee_quote_value if third_asset_fee else ZERO,
             realized_pnl=realized,
             timestamp=fill.timestamp,
         ))

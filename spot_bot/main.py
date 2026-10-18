@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 import hmac
 import secrets
 import time
@@ -15,13 +16,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from passlib.context import CryptContext
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_db, init_db
 from .dashboard_metrics import dashboard_metrics
 from .grid import build_grid
-from .models import Environment, RiskState, SpotOrder
+from .models import Environment, RealizedPNLEntry, RiskState, SpotOrder
 
 BASE = Path(__file__).resolve().parent
 settings = get_settings()
@@ -179,8 +181,61 @@ def grid_preview(r: Request, symbol: str, lower_price: str, upper_price: str, gr
 
 @app.get("/api/risk/status")
 def risk_status(r: Request, db: Session = Depends(get_db)):
-    require_auth(r); state = db.get(RiskState, 1)
-    return {"status": "halted" if state and state.halted else "ready", "equity_quote": "0", "drawdown_pct": "0", "daily_realized_pnl_quote": "0", "reason": state.reason if state else None}
+    require_auth(r)
+    state = db.get(RiskState, 1)
+    payload = {
+        "status": "halted" if state and state.halted else "ready",
+        "equity_quote": None,
+        "drawdown_pct": None,
+        "daily_realized_pnl_quote": None,
+        "reason": state.reason if state else None,
+        "metrics_available": False,
+        "metrics_error": None,
+    }
+    # Never present placeholder zeros as measured risk. Equity is sourced from
+    # the same USDT valuation used by Balance & PNL; drawdown remains unavailable
+    # until a durable peak-equity series exists. Daily PNL is calculated from
+    # UTC-day ledger entries and current quote-to-USDT conversions.
+    try:
+        from .exchange import BinanceSpot
+        environment = Environment(settings.default_environment)
+        adapter = BinanceSpot(environment)
+        metrics = dashboard_metrics(db, adapter, environment)
+        if metrics["equity_complete"]:
+            payload["equity_quote"] = metrics["equity_usdt"]
+        payload["metrics_available"] = metrics["equity_complete"]
+        now = datetime.now(UTC)
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        entries = db.scalars(select(RealizedPNLEntry).where(
+            RealizedPNLEntry.environment == environment.value,
+            RealizedPNLEntry.timestamp >= day_start,
+            RealizedPNLEntry.timestamp < day_end,
+        )).all()
+        daily_pnl = Decimal("0")
+        daily_complete = True
+        for entry in entries:
+            quote = entry.symbol.upper().split("/", 1)[1]
+            conversion = Decimal("1") if quote == "USDT" else None
+            if conversion is None:
+                try:
+                    conversion = Decimal(str(adapter.ticker(f"{quote}/USDT").get("last")))
+                    if not conversion.is_finite() or conversion <= 0:
+                        conversion = None
+                except Exception:
+                    conversion = None
+            if conversion is None:
+                daily_complete = False
+                break
+            daily_pnl += Decimal(str(entry.realized_pnl)) * conversion
+        if daily_complete:
+            payload["daily_realized_pnl_quote"] = str(daily_pnl)
+            payload["daily_pnl_complete"] = True
+        else:
+            payload["daily_pnl_complete"] = False
+    except Exception as exc:
+        payload["metrics_error"] = str(exc)
+    return payload
 
 from .trading_routes import register_trading_routes
 register_trading_routes(app)
