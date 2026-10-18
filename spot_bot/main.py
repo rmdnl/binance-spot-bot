@@ -124,7 +124,6 @@ def dashboard(r: Request):
 def account(r: Request, db: Session = Depends(get_db)):
     require_auth(r)
     from .exchange import BinanceSpot
-    from .models import Environment
     try:
         ex = BinanceSpot(Environment(settings.default_environment)); raw = ex.balance(); rows = []
         for asset, total in raw.get("total", {}).items():
