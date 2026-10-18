@@ -30,7 +30,7 @@
     metric('metric-unrealized', (m.unrealized_pnl_complete ? '' : '~ ') + usdt(m.unrealized_pnl_usdt),
       m.unrealized_pnl_complete ? 'Open inventory marked to current market prices' : 'Some open positions could not be valued');
   }
-  async function refreshRisk(){ const el=document.getElementById('risk-status'); if(!el)return; try{const d=await json('/api/risk/status');el.innerHTML=`<b>${esc(d.status.toUpperCase())}</b><p class="muted">Drawdown ${esc(d.drawdown_pct)}% · Daily PNL ${esc(d.daily_realized_pnl_quote)} USDT</p>`;}catch(e){el.textContent=e.message;} }
+  async function refreshRisk(){ const el=document.getElementById('risk-status'); if(!el)return; try{const d=await json('/api/risk/status'); const equity=d.equity_quote==null?'Unavailable':usdt(d.equity_quote); const drawdown=d.drawdown_pct==null?'Unavailable':`${esc(d.drawdown_pct)}%`; const daily=d.daily_realized_pnl_quote==null?'Unavailable':usdt(d.daily_realized_pnl_quote); el.innerHTML=`<b>${esc(d.status.toUpperCase())}</b><p class="muted">Equity ${esc(equity)} · Drawdown ${drawdown} · Daily PNL ${esc(daily)}</p>${d.metrics_error?`<p class="muted">Risk valuation unavailable: ${esc(d.metrics_error)}</p>`:''}`;}catch(e){el.textContent=e.message;} }
   async function loadAccount(){
     const anchor=document.getElementById('overview');
     if(!anchor)return;
