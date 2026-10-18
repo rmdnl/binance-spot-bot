@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -90,6 +91,22 @@ class BinanceSpot:
             limit=1000,
             params={"orderId": order_id},
         )
+
+    def historical_price(self, symbol: str, timestamp: datetime, *, max_age_ms: int = 120_000) -> D | None:
+        """Return latest public trade price at/before fill time, refusing stale history."""
+        self.market(symbol)
+        target_ms = int(timestamp.timestamp() * 1000)
+        trades = self.exchange.fetch_trades(symbol, since=max(0, target_ms - max_age_ms), limit=1000)
+        eligible = []
+        for trade in trades or []:
+            trade_ms = trade.get("timestamp")
+            raw_price = trade.get("price")
+            if trade_ms is None or raw_price is None:
+                continue
+            price = D(str(raw_price))
+            if price.is_finite() and price > 0 and target_ms - max_age_ms <= int(trade_ms) <= target_ms:
+                eligible.append((int(trade_ms), price))
+        return max(eligible, key=lambda item: item[0])[1] if eligible else None
 
     def fetch_order(self, exchange_order_id: str, symbol: str):
         return self.exchange.fetch_order(exchange_order_id, symbol)
