@@ -102,6 +102,9 @@ class GridConfig:
 class SpotOrder(Base):
     __tablename__ = "spot_orders"
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Optimistic concurrency control prevents a stale submit/reconcile worker
+    # from overwriting a newer order state committed by another worker.
+    version_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     environment: Mapped[str] = mapped_column(String(10), index=True)
     symbol: Mapped[str] = mapped_column(String(40), index=True)
     side: Mapped[str] = mapped_column(String(4))
@@ -118,6 +121,8 @@ class SpotOrder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
     fills: Mapped[list["SpotFill"]] = relationship(back_populates="order", cascade="all, delete-orphan")
+
+    __mapper_args__ = {"version_id_col": version_id}  # noqa: RUF012
 
 
 class SpotFill(Base):
