@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,10 +18,9 @@ D = Decimal
 
 def guard(request: Request, csrf_token: str) -> None:
     if not auth(request):
-        from fastapi import HTTPException
         raise HTTPException(401, "Authentication required")
     if not csrf_valid(csrf_token, request):
-        raise ValueError("Invalid CSRF token")
+        raise HTTPException(403, "Invalid CSRF token")
 
 
 def get_bot(db: Session, bot_id: int) -> GridBot:
