@@ -534,3 +534,88 @@ def test_crash_matrix_partial_fill_resume_after_fresh_session_applies_only_new_t
         assert position.quote_cost == D("800.080000000000")
 
     engine.dispose()
+
+
+def _commit_fill_then_die(database_url, trade):
+    engine = sqlite_engine(database_url)
+    with Session(engine) as db:
+        order = db.scalar(
+            select(SpotOrder).where(
+                SpotOrder.client_order_id == "crash-after-commit-001"
+            )
+        )
+        assert order is not None
+        assert record_fills(db, CrashMatrixAdapter(trades=[trade]), order) == 1
+        db.commit()
+        # Commit is durable, but the process dies before reporting success.
+        os._exit(74)
+
+
+def test_crash_matrix_restart_after_commit_does_not_duplicate_fill(tmp_path):
+    database_path = tmp_path / "crash-after-commit.sqlite"
+    database_url = f"sqlite:///{database_path}"
+    engine = sqlite_engine(database_url)
+    Base.metadata.create_all(engine)
+    trade = {
+        "id": "trade-after-commit-1",
+        "order": "exchange-after-commit-1",
+        "amount": "0.01",
+        "price": "80000",
+        "cost": "800",
+        "fee": {"cost": "0.08", "currency": "USDT"},
+    }
+
+    with Session(engine) as db:
+        make_position(db)
+        db.add(
+            SpotOrder(
+                environment=Environment.TESTNET.value,
+                symbol="BTC/USDT",
+                side="buy",
+                order_type="limit",
+                status=OrderStatus.FILLED.value,
+                amount=D("0.01"),
+                price=D("80000"),
+                client_order_id="crash-after-commit-001",
+                exchange_order_id="exchange-after-commit-1",
+            )
+        )
+        db.commit()
+    engine.dispose()
+
+    process = multiprocessing.get_context("fork").Process(
+        target=_commit_fill_then_die, args=(database_url, trade)
+    )
+    process.start()
+    process.join(timeout=10)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+        raise AssertionError("post-commit crash worker timed out")
+    assert process.exitcode == 74
+
+    # Reopen the persistent DB as a fresh process/session after the ambiguous
+    # outcome: the prior commit succeeded even though the worker never returned.
+    engine = sqlite_engine(database_url)
+    with Session(engine) as db:
+        assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
+        order = db.scalar(
+            select(SpotOrder).where(
+                SpotOrder.client_order_id == "crash-after-commit-001"
+            )
+        )
+        position = db.scalar(
+            select(InventoryPosition).where(
+                InventoryPosition.environment == Environment.TESTNET.value,
+                InventoryPosition.symbol == "BTC/USDT",
+            )
+        )
+        assert position.base_quantity == D("0.010000000000")
+        assert position.quote_cost == D("800.080000000000")
+        assert record_fills(db, CrashMatrixAdapter(trades=[trade]), order) == 0
+        db.commit()
+        assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
+        db.refresh(position)
+        assert position.base_quantity == D("0.010000000000")
+        assert position.quote_cost == D("800.080000000000")
+    engine.dispose()
