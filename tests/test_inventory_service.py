@@ -193,3 +193,34 @@ def test_zero_and_negative_values_are_rejected(db):
     negative_fee = make_fill(db, side="buy", amount="0.001", price="80000", fee="-0.01")
     with pytest.raises(ValueError, match="fee"):
         apply_fill(db, negative_fee)
+
+
+def test_third_asset_fee_is_included_in_quote_cost(db):
+    fill = make_fill(db, side="buy", amount="0.001", price="80000", fee="0.01", fee_currency="BNB")
+    fill.fee_quote_value = D("3")
+    result = apply_fill(db, fill)
+    db.commit()
+    assert result.base_quantity == D("0.001")
+    assert result.quote_cost == D("80003")
+
+
+def test_third_asset_fee_without_quote_valuation_fails_closed(db):
+    fill = make_fill(db, side="buy", amount="0.001", price="80000", fee="0.01", fee_currency="BNB")
+    with pytest.raises(RuntimeError, match="third-asset fee has no quote-currency valuation"):
+        apply_fill(db, fill)
+    db.rollback()
+    assert db.scalar(select(InventoryApplication).where(InventoryApplication.fill_id == fill.id)) is None
+
+
+def test_third_asset_fee_is_deducted_from_sell_proceeds_and_pnl(db):
+    buy = make_fill(db, side="buy", amount="0.001", price="80000")
+    apply_fill(db, buy)
+    db.commit()
+    sell = make_fill(db, side="sell", amount="0.001", price="84000", fee="0.01", fee_currency="BNB")
+    sell.fee_quote_value = D("3")
+    result = apply_fill(db, sell)
+    db.commit()
+    pnl = db.scalar(select(RealizedPNLEntry).where(RealizedPNLEntry.fill_id == sell.id))
+    assert result.realized_pnl == D("1")
+    assert pnl.proceeds == D("81")
+    assert pnl.fees == D("3")
