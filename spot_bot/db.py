@@ -25,6 +25,7 @@ def _alembic_config() -> Config:
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     config.set_main_option("sqlalchemy.url", url)
+    config.attributes["sqlalchemy_url_explicit"] = True
     return config
 
 
