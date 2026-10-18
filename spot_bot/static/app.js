@@ -63,5 +63,104 @@
     }
   }
   document.querySelectorAll('form[data-csrf]').forEach(f=>{f.addEventListener('submit',e=>{if(!f.querySelector('input[name="csrf_token"]')){const i=document.createElement('input');i.type='hidden';i.name='csrf_token';i.value=csrf;f.appendChild(i);}})});
+  const gridForm = document.getElementById('grid-create-form');
+  const gridMessage = document.getElementById('grid-message');
+  const gridBots = document.getElementById('grid-bots');
+  const gridPreview = document.getElementById('grid-preview-result');
+  function showGridMessage(message, isError=false) {
+    if (!gridMessage) return;
+    gridMessage.textContent = message;
+    gridMessage.className = isError ? 'alert' : 'muted';
+  }
+  function gridFormValues() {
+    return Object.fromEntries(new FormData(gridForm).entries());
+  }
+  async function previewGrid() {
+    if (!gridForm) return;
+    const v = gridFormValues();
+    const q = new URLSearchParams({
+      symbol: v.symbol, lower_price: v.lower_price, upper_price: v.upper_price,
+      grids: v.grids, grid_type: v.grid_type
+    });
+    try {
+      const d = await json('/api/grid/preview?' + q.toString());
+      gridPreview.innerHTML = '<p class="muted">Step: ' + esc(d.step_pct) +
+        '% · ' + esc(d.levels.length) + ' levels</p><div class="strategy-list">' +
+        d.levels.map(level => '<article class="strategy-row"><div class="strategy-name"><b>Level ' +
+          esc(level.index) + '</b></div><span class="state-chip">' + esc(level.price) +
+          '</span></article>').join('') + '</div>';
+      showGridMessage('Grid preview ready. Review the levels before creating it.');
+    } catch (e) { showGridMessage(e.message, true); }
+  }
+  async function refreshGridBots() {
+    if (!gridBots) return;
+    try {
+      const bots = await json('/api/grid/bots');
+      if (!bots.length) {
+        gridBots.innerHTML = '<div class="empty-state"><b>No grid instances yet</b><p>Create a grid above, preview its levels, then start it when ready.</p></div>';
+        return;
+      }
+      const cards = await Promise.all(bots.map(async bot => {
+        let detail = null;
+        try { detail = await json('/api/grid/bots/' + encodeURIComponent(bot.id)); } catch (_) {}
+        const price = detail?.current_price ? 'Price ' + detail.current_price : (detail?.price_error ? 'Price unavailable' : 'Price loading');
+        const nearest = detail?.nearest_level ? ' · Nearest level ' + detail.nearest_level.price +
+          ' (' + Number(detail.nearest_level.distance_pct).toFixed(3) + '% away)' : '';
+        let actions = '';
+        if (bot.status === 'draft') actions = '<button class="button primary" data-grid-action="start" data-grid-id="' + esc(bot.id) + '">Start</button>';
+        if (bot.status === 'running') actions = '<button class="button secondary" data-grid-action="pause" data-grid-id="' + esc(bot.id) + '">Pause</button><button class="button secondary" data-grid-action="stop" data-grid-id="' + esc(bot.id) + '">Stop</button>';
+        if (bot.status === 'paused') actions = '<button class="button primary" data-grid-action="resume" data-grid-id="' + esc(bot.id) + '">Resume</button><button class="button secondary" data-grid-action="stop" data-grid-id="' + esc(bot.id) + '">Stop</button>';
+        if (bot.status === 'error') actions = '<button class="button secondary" data-grid-action="stop" data-grid-id="' + esc(bot.id) + '">Stop</button>';
+        return '<article class="strategy-row"><div class="strategy-name"><b>' + esc(bot.symbol) + ' · #' + esc(bot.id) +
+          '</b><small>' + esc(bot.environment.toUpperCase()) + ' · ' + esc(bot.lower_price) + ' to ' +
+          esc(bot.upper_price) + ' · ' + esc(bot.grids) + ' levels · ' + esc(bot.capital_quote) +
+          ' quote capital</small><small>' + esc(price + nearest) + ' · ' + esc(bot.open_orders.length) +
+          ' open orders</small></div><span class="state-chip">' + esc(bot.status.toUpperCase()) +
+          '</span><div class="top-actions">' + actions + '</div></article>';
+      }));
+      gridBots.innerHTML = cards.join('');
+    } catch (e) {
+      gridBots.innerHTML = '<div class="alert">' + esc(e.message) + '</div>';
+    }
+  }
+  document.getElementById('grid-preview')?.addEventListener('click', previewGrid);
+  document.getElementById('grid-refresh')?.addEventListener('click', refreshGridBots);
+  gridForm?.addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      const d = await json('/api/grid/bots', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams(new FormData(gridForm))
+      });
+      showGridMessage('Grid #' + d.id + ' created in DRAFT. Preview and verify, then press Start to place orders.');
+      gridPreview.innerHTML = '';
+      await refreshGridBots();
+    } catch (err) { showGridMessage(err.message, true); }
+  });
+  gridBots?.addEventListener('click', async e => {
+    const button = e.target.closest('[data-grid-action]');
+    if (!button) return;
+    const id = button.dataset.gridId;
+    const action = button.dataset.gridAction;
+    if (action === 'stop' && !window.confirm('Stop this grid and cancel its open orders?')) return;
+    button.disabled = true;
+    showGridMessage('Sending ' + action + ' request for grid #' + id + '…');
+    try {
+      const d = await json('/api/grid/bots/' + encodeURIComponent(id) + '/' + action, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({csrf_token: csrf})
+      });
+      showGridMessage('Grid #' + id + ': ' + d.status + '. Orders submitted: ' +
+        (d.submitted ?? 'n/a') + ', canceled: ' + (d.canceled ?? 'n/a') + '.');
+      await refreshGridBots();
+    } catch (err) {
+      showGridMessage(err.message, true);
+      button.disabled = false;
+    }
+  });
+  refreshGridBots();
+  if (gridBots) setInterval(refreshGridBots, 5000);
   loadAccount(); refreshRisk();
 })();
