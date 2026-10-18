@@ -92,6 +92,23 @@ class AmbiguousSubmitAdapter(FakeAdapter):
         raise ccxt.RequestTimeout("exchange accepted order but response timed out")
 
 
+
+class DuplicateSubmitAdapter(AmbiguousSubmitAdapter):
+    """A concurrent worker already created the order with this client ID."""
+
+    def create_order(self, request):
+        self.submissions += 1
+        self.existing = {
+            "id": "accepted-by-other-worker",
+            "clientOrderId": request.client_order_id,
+            "symbol": request.symbol,
+            "status": "open",
+            "filled": "0",
+            "average": None,
+        }
+        raise ccxt.DuplicateOrder("client order ID already exists")
+
+
 def db_session():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
@@ -159,6 +176,21 @@ def test_ambiguous_submit_recovers_accepted_order_without_duplicate_submission()
     assert adapter.submissions == 1
     assert adapter.lookup_calls == 2
     assert result.order.error_message is None
+
+
+
+def test_concurrent_duplicate_client_id_recovers_existing_exchange_order():
+    db = db_session()
+    order = make_order(db)
+    db.commit()
+    adapter = DuplicateSubmitAdapter()
+
+    result = recover_or_submit(db, adapter, order)
+
+    assert result.order.exchange_order_id == "accepted-by-other-worker"
+    assert result.order.status == OrderStatus.OPEN.value
+    assert adapter.submissions == 1
+    assert adapter.lookup_calls == 2
 
 
 def test_unknown_lookup_error_fails_closed_without_resubmit():
