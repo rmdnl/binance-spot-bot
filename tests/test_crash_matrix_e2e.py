@@ -1,3 +1,5 @@
+import multiprocessing
+import os
 from decimal import Decimal as D
 
 import ccxt
@@ -62,8 +64,8 @@ class CrashMatrixAdapter:
         return self.trades
 
 
-def db_session():
-    engine = create_engine("sqlite:///:memory:")
+def sqlite_engine(url):
+    engine = create_engine(url)
 
     # Disable sqlite3's legacy transaction control and let SQLAlchemy
     # emit BEGIN explicitly, so SAVEPOINT operations roll back correctly.
@@ -75,8 +77,29 @@ def db_session():
     def emit_begin(connection):
         connection.exec_driver_sql("BEGIN")
 
+    return engine
+
+
+def db_session():
+    engine = sqlite_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     return Session(engine)
+
+
+def _crash_process_before_commit(database_url, trade):
+    # This runs in a separate OS process. os._exit intentionally bypasses
+    # Python cleanup handlers and Session.close(), like an abrupt process death.
+    engine = sqlite_engine(database_url)
+    with Session(engine) as db:
+        order = db.scalar(
+            select(SpotOrder).where(
+                SpotOrder.client_order_id == "crash-process-001"
+            )
+        )
+        adapter = CrashMatrixAdapter(trades=[trade])
+        assert order is not None
+        assert record_fills(db, adapter, order) == 1
+        os._exit(73)
 
 
 def make_bot(db):
@@ -336,3 +359,90 @@ def test_crash_matrix_accounting_rollback_then_restart_applies_once():
     assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
     assert position.base_quantity == D("0.010000000000")
     assert position.quote_cost == D("800.080000000000")
+
+
+
+def test_crash_matrix_real_process_death_then_restart_replays_once(tmp_path):
+    database_path = tmp_path / "crash-matrix.sqlite"
+    database_url = f"sqlite:///{database_path}"
+    engine = sqlite_engine(database_url)
+    Base.metadata.create_all(engine)
+
+    trade = {
+        "id": "trade-process-crash-1",
+        "order": "exchange-process-crash-1",
+        "amount": "0.01",
+        "price": "80000",
+        "cost": "800",
+        "fee": {"cost": "0.08", "currency": "USDT"},
+    }
+
+    with Session(engine) as db:
+        make_position(db)
+        order = SpotOrder(
+            environment=Environment.TESTNET.value,
+            symbol="BTC/USDT",
+            side="buy",
+            order_type="limit",
+            status=OrderStatus.FILLED.value,
+            amount=D("0.01"),
+            price=D("80000"),
+            client_order_id="crash-process-001",
+            exchange_order_id="exchange-process-crash-1",
+        )
+        db.add(order)
+        db.commit()
+
+    engine.dispose()
+
+    # The child persists a fill and applies inventory in an open transaction,
+    # then dies without commit or graceful Python/SQLAlchemy cleanup.
+    process = multiprocessing.get_context("fork").Process(
+        target=_crash_process_before_commit,
+        args=(database_url, trade),
+    )
+    process.start()
+    process.join(timeout=10)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5)
+        raise AssertionError("crash worker did not exit within 10 seconds")
+    assert process.exitcode == 73
+
+    # Re-open the file-backed DB in a fresh engine/session, as a restarted bot
+    # would. The interrupted transaction must have left no partial accounting.
+    engine = sqlite_engine(database_url)
+    with Session(engine) as db:
+        assert counts(db) == {"fills": 0, "applications": 0, "pnl": 0}
+        position = db.scalar(
+            select(InventoryPosition).where(
+                InventoryPosition.environment == Environment.TESTNET.value,
+                InventoryPosition.symbol == "BTC/USDT",
+            )
+        )
+        assert position.base_quantity == D("0")
+        assert position.quote_cost == D("0")
+
+        order = db.scalar(
+            select(SpotOrder).where(
+                SpotOrder.client_order_id == "crash-process-001"
+            )
+        )
+        adapter = CrashMatrixAdapter(trades=[trade])
+        assert record_fills(db, adapter, order) == 1
+        db.commit()
+
+        assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
+        db.refresh(position)
+        assert position.base_quantity == D("0.010000000000")
+        assert position.quote_cost == D("800.080000000000")
+
+        # A second restart/reconcile must not reapply the same exchange trade.
+        assert record_fills(db, adapter, order) == 0
+        db.commit()
+        assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
+        db.refresh(position)
+        assert position.base_quantity == D("0.010000000000")
+        assert position.quote_cost == D("800.080000000000")
+
+    engine.dispose()
