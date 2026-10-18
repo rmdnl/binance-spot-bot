@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Callable
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .exchange import BinanceSpot
@@ -17,7 +17,6 @@ from .models import Environment, GridBot, GridLevel, GridStatus, OrderSide, Orde
 log = logging.getLogger(__name__)
 D = Decimal
 ACTIVE = {OrderStatus.NEW.value, OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value}
-TERMINAL = {OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value, OrderStatus.REJECTED.value}
 
 
 def monitor_grid_once(db: Session, bot: GridBot, adapter: BinanceSpot) -> dict:
