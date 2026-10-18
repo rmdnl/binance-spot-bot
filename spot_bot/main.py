@@ -23,7 +23,7 @@ from .models import RiskState, SpotOrder
 
 BASE = Path(__file__).resolve().parent
 settings = get_settings()
-app = FastAPI(title="Binance Spot Bot", docs_url=None, redoc_url=None)
+app = FastAPI(title="Binance Spot Bot", docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -73,7 +73,7 @@ def csrf(r):
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "service": "binance-spot-bot", "execution_enabled": settings.allow_order_submission}
+    return {"status": "ok"}
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(r: Request):
