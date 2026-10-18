@@ -124,6 +124,7 @@ class SpotFill(Base):
     __tablename__ = "spot_fills"
     id: Mapped[int] = mapped_column(primary_key=True)
     order_id: Mapped[int] = mapped_column(ForeignKey("spot_orders.id"), index=True)
+    environment: Mapped[str] = mapped_column(String(10), default=Environment.TESTNET.value)
     symbol: Mapped[str] = mapped_column(String(40), index=True)
     side: Mapped[str] = mapped_column(String(4))
     price: Mapped[D] = mapped_column(Numeric(38, 18))
@@ -131,9 +132,17 @@ class SpotFill(Base):
     quote_amount: Mapped[D] = mapped_column(Numeric(38, 18))
     fee: Mapped[D] = mapped_column(Numeric(38, 18), default=D("0"))
     fee_currency: Mapped[str] = mapped_column(String(20), default="")
-    exchange_trade_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    exchange_trade_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     order: Mapped[SpotOrder] = relationship(back_populates="fills")
+    __table_args__ = (
+        UniqueConstraint(
+            "environment",
+            "symbol",
+            "exchange_trade_id",
+            name="uq_spot_fill_environment_symbol_trade_id",
+        ),
+    )
     inventory_application: Mapped["InventoryApplication | None"] = relationship(
         back_populates="fill", uselist=False, cascade="all, delete-orphan"
     )

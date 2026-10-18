@@ -163,6 +163,7 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
             fee = trade.get("fee") or {}
             fill = SpotFill(
                 order_id=order.id,
+                environment=order.environment,
                 symbol=order.symbol,
                 side=order.side,
                 price=price,
