@@ -1,5 +1,6 @@
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
