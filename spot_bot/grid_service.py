@@ -71,7 +71,7 @@ def pause_grid(db: Session, bot: GridBot) -> GridBot:
 
 
 def stop_grid(db: Session, bot: GridBot) -> GridBot:
-    if bot.status not in {GridStatus.RUNNING.value, GridStatus.PAUSED.value, GridStatus.ERROR.value}:
+    if bot.status not in {GridStatus.ARMED.value, GridStatus.RUNNING.value, GridStatus.PAUSED.value, GridStatus.ERROR.value}:
         raise ValueError(f"grid {bot.id} cannot stop from {bot.status}")
     bot.status = GridStatus.STOPPED.value
     db.flush()

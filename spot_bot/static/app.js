@@ -104,17 +104,19 @@
         let detail = null;
         try { detail = await json('/api/grid/bots/' + encodeURIComponent(bot.id)); } catch (_) {}
         const price = detail?.current_price ? 'Price ' + detail.current_price : (detail?.price_error ? 'Price unavailable' : 'Price loading');
+        const trigger = bot.trigger_price ? ' · Downward trigger ' + bot.trigger_price : '';
         const nearest = detail?.nearest_level ? ' · Nearest level ' + detail.nearest_level.price +
           ' (' + Number(detail.nearest_level.distance_pct).toFixed(3) + '% away)' : '';
         let actions = '';
         if (bot.status === 'draft') actions = '<button class="button primary" data-grid-action="start" data-grid-id="' + esc(bot.id) + '">Start</button>';
+        if (bot.status === 'armed') actions = '<button class="button secondary" data-grid-action="stop" data-grid-id="' + esc(bot.id) + '">Stop waiting</button>';
         if (bot.status === 'running') actions = '<button class="button secondary" data-grid-action="pause" data-grid-id="' + esc(bot.id) + '">Pause</button><button class="button secondary" data-grid-action="stop" data-grid-id="' + esc(bot.id) + '">Stop</button>';
         if (bot.status === 'paused') actions = '<button class="button primary" data-grid-action="resume" data-grid-id="' + esc(bot.id) + '">Resume</button><button class="button secondary" data-grid-action="stop" data-grid-id="' + esc(bot.id) + '">Stop</button>';
         if (bot.status === 'error') actions = '<button class="button secondary" data-grid-action="stop" data-grid-id="' + esc(bot.id) + '">Stop</button>';
         return '<article class="strategy-row"><div class="strategy-name"><b>' + esc(bot.symbol) + ' · #' + esc(bot.id) +
           '</b><small>' + esc(bot.environment.toUpperCase()) + ' · ' + esc(bot.lower_price) + ' to ' +
           esc(bot.upper_price) + ' · ' + esc(bot.grids) + ' levels · ' + esc(bot.capital_quote) +
-          ' quote capital</small><small>' + esc(price + nearest) + ' · ' + esc(bot.open_orders.length) +
+          ' quote capital' + esc(trigger) + '</small><small>' + esc(price + nearest) + ' · ' + esc(bot.open_orders.length) +
           ' open orders</small></div><span class="state-chip">' + esc(bot.status.toUpperCase()) +
           '</span><div class="top-actions">' + actions + '</div></article>';
       }));
@@ -133,7 +135,7 @@
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: new URLSearchParams(new FormData(gridForm))
       });
-      showGridMessage('Grid #' + d.id + ' created in DRAFT. Preview and verify, then press Start to place orders.');
+      showGridMessage('Grid #' + d.id + ' created in DRAFT. Preview levels and trigger, then press Start to arm or activate it.');
       gridPreview.innerHTML = '';
       await refreshGridBots();
     } catch (err) { showGridMessage(err.message, true); }
@@ -152,7 +154,7 @@
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: new URLSearchParams({csrf_token: csrf})
       });
-      showGridMessage('Grid #' + id + ': ' + d.status + '. Orders submitted: ' +
+      showGridMessage('Grid #' + id + ': ' + d.status + (d.status === 'armed' ? ' and waiting for price to fall to ' + (d.trigger_price || 'trigger') + '.' : '.') + ' Orders submitted: ' +
         (d.submitted ?? 'n/a') + ', canceled: ' + (d.canceled ?? 'n/a') + '.');
       await refreshGridBots();
     } catch (err) {

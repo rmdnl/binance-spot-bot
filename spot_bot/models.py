@@ -63,6 +63,7 @@ class OrderStatus(StrEnum):
 
 class GridStatus(StrEnum):
     DRAFT = "draft"
+    ARMED = "armed"
     RUNNING = "running"
     PAUSED = "paused"
     STOPPED = "stopped"
@@ -212,6 +213,7 @@ class GridBot(Base):
     grids: Mapped[int] = mapped_column(Integer)
     capital_quote: Mapped[D] = mapped_column(Numeric(38, 18))
     status: Mapped[str] = mapped_column(String(16), default=GridStatus.DRAFT.value, index=True)
+    trigger_price: Mapped[D | None] = mapped_column(Numeric(38, 18), nullable=True)
     max_open_orders: Mapped[int] = mapped_column(Integer, default=20)
     stop_loss_price: Mapped[D | None] = mapped_column(Numeric(38, 18), nullable=True)
     stop_loss_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
