@@ -45,15 +45,19 @@ def seed(engine):
 def test_concurrent_reconcile_same_order_does_not_duplicate_fill_or_accounting(tmp_path):
     engine = make_db(tmp_path)
     order_id = seed(engine)
-    barrier = Barrier(2)
+    exchange_barrier = Barrier(2)
+    apply_barrier = Barrier(2)
 
     def worker():
         with Session(engine) as db:
             order = db.get(SpotOrder, order_id)
-            reconcile_order(db, ConcurrentAdapter(barrier), order)
+            reconcile_order(db, ConcurrentAdapter(exchange_barrier), order)
             db.commit()
             fill = db.scalar(select(SpotFill).where(SpotFill.order_id == order_id))
             if fill:
+                # Both workers have loaded the same unapplied fill before either
+                # can claim it, forcing the inventory idempotency race.
+                apply_barrier.wait()
                 apply_fill(db, fill)
                 db.commit()
 
