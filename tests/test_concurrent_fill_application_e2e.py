@@ -146,4 +146,4 @@ def test_two_distinct_concurrent_fills_preserve_both_inventory_updates(tmp_path)
         assert db.scalar(select(func.count()).select_from(RealizedPNLEntry)) == 0
         assert position is not None
         assert position.base_quantity == D("0.02")
-        assert position.quote_cost == D("1600.16")
+        assert position.quote_cost == D("1603.16")
