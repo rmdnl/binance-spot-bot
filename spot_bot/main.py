@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hmac
 import secrets
 import time
@@ -204,10 +204,13 @@ def risk_status(r: Request, db: Session = Depends(get_db)):
         if metrics["equity_complete"]:
             payload["equity_quote"] = metrics["equity_usdt"]
         payload["metrics_available"] = metrics["equity_complete"]
-        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        now = datetime.now(UTC)
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
         entries = db.scalars(select(RealizedPNLEntry).where(
             RealizedPNLEntry.environment == environment.value,
             RealizedPNLEntry.timestamp >= day_start,
+            RealizedPNLEntry.timestamp < day_end,
         )).all()
         daily_pnl = Decimal("0")
         daily_complete = True
