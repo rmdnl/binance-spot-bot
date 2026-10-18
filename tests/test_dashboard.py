@@ -96,11 +96,12 @@ def test_account_keeps_balance_when_metrics_calculation_fails(monkeypatch):
 def test_risk_status_never_reports_placeholder_zero_metrics(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
     from spot_bot import main
     from spot_bot.db import get_db
     from spot_bot.models import Base
 
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     with Session(engine) as db:
         main.app.dependency_overrides[get_db] = lambda: db
