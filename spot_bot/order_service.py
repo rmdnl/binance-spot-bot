@@ -191,7 +191,14 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
     # Trade discovery may be unavailable for a local order without an exchange ID.
     # Still process previously persisted, unapplied fills below.
     if order.exchange_order_id:
-        trades = adapter.recent_trades(order.symbol, limit=100)
+        # Prefer an exchange-order-scoped query so a delayed fill cannot fall
+        # out of the account's latest 100 trades before the next reconciliation.
+        fetch_for_order = getattr(type(adapter), "trades_for_order", None)
+        trades = (
+            fetch_for_order(adapter, order.symbol, order.exchange_order_id)
+            if callable(fetch_for_order)
+            else adapter.recent_trades(order.symbol, limit=100)
+        )
         existing = set(
             db.scalars(
                 select(SpotFill.exchange_trade_id).where(SpotFill.order_id == order.id)

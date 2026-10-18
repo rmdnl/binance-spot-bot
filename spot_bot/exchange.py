@@ -79,6 +79,18 @@ class BinanceSpot:
     def recent_trades(self, symbol: str | None = None, limit: int = 50):
         return self.exchange.fetch_my_trades(symbol, limit=limit)
 
+    def trades_for_order(self, symbol: str, exchange_order_id: str):
+        """Fetch fills for one Binance order instead of relying on the latest account trades."""
+        try:
+            order_id = int(exchange_order_id)
+        except (TypeError, ValueError):
+            return self.recent_trades(symbol, limit=100)
+        return self.exchange.fetch_my_trades(
+            symbol,
+            limit=1000,
+            params={"orderId": order_id},
+        )
+
     def fetch_order(self, exchange_order_id: str, symbol: str):
         return self.exchange.fetch_order(exchange_order_id, symbol)
 
