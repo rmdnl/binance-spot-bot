@@ -80,7 +80,7 @@ def test_explicit_alembic_config_url_overrides_database_url_environment(tmp_path
     with configured_engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "20261018_0007"
+        ).scalar_one() == "20261019_0008"
         columns = {
             row[1] for row in connection.execute(text("PRAGMA table_info(spot_fills)"))
         }
@@ -150,7 +150,7 @@ def test_custom_alembic_config_without_url_falls_back_to_database_url_environmen
     with engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "20261018_0007"
+        ).scalar_one() == "20261019_0008"
     engine.dispose()
 
 def insert_order(connection, environment, symbol, suffix):
