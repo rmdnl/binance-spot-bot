@@ -121,7 +121,7 @@ def dashboard(r: Request):
     return templates.TemplateResponse(r, "dashboard.html", {"csrf_token": csrf(r), "environment": settings.default_environment.upper()})
 
 @app.get("/api/account")
-def account(r: Request):
+def account(r: Request, db: Session = Depends(get_db)):
     require_auth(r)
     from .exchange import BinanceSpot
     from .models import Environment
@@ -130,19 +130,8 @@ def account(r: Request):
         for asset, total in raw.get("total", {}).items():
             if float(total or 0) > 0: rows.append({"asset": asset, "free": str(raw.get("free", {}).get(asset, 0)), "used": str(raw.get("used", {}).get(asset, 0)), "total": str(total)})
         trades = ex.recent_trades(limit=25)
-        return {"available": True, "balances": rows, "trades": trades}
+        return {"available": True, "balances": rows, "trades": trades, "metrics": dashboard_metrics(db, ex, Environment(settings.default_environment))}
     except Exception as exc: return {"available": False, "error": str(exc), "balances": [], "trades": []}
-
-@app.get("/api/metrics")
-def account_metrics(r: Request, db: Session = Depends(get_db)):
-    require_auth(r)
-    from .exchange import BinanceSpot
-    try:
-        environment = Environment(settings.default_environment)
-        adapter = BinanceSpot(environment)
-        return {"available": True, **dashboard_metrics(db, adapter, environment)}
-    except Exception as exc:
-        return {"available": False, "error": str(exc)}
 
 @app.get("/api/orders")
 def orders(r: Request, db: Session = Depends(get_db)):
