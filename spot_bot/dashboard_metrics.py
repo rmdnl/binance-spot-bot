@@ -30,9 +30,20 @@ def _quote_to_usdt(adapter, quote: str) -> D | None:
     return _last_price(adapter, f"{quote}/USDT")
 
 
-def dashboard_metrics(db: Session, adapter, environment: Environment) -> dict:
-    """Calculate equity and ledger PNL in USDT without silently pricing unknown assets at zero."""
-    raw = adapter.balance()
+def dashboard_metrics(
+    db: Session,
+    adapter,
+    environment: Environment,
+    *,
+    balance_snapshot: dict | None = None,
+) -> dict:
+    """Calculate equity and ledger PNL in USDT without silently pricing unknown assets at zero.
+
+    Reuse a balance snapshot when the caller already fetched one, avoiding a
+    second exchange request that could fail independently or show a different
+    account state.
+    """
+    raw = balance_snapshot if balance_snapshot is not None else adapter.balance()
     totals = raw.get("total", {}) or {}
     equity = ZERO
     unpriced_assets: list[str] = []
