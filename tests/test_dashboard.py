@@ -46,7 +46,7 @@ def test_account_keeps_balance_and_equity_when_recent_trades_fail(monkeypatch):
     }
     monkeypatch.setattr(main, "require_auth", lambda request: None)
     monkeypatch.setattr("spot_bot.exchange.BinanceSpot", FakeExchange)
-    monkeypatch.setattr(main, "dashboard_metrics", lambda db, ex, environment: expected_metrics)
+    monkeypatch.setattr(main, "dashboard_metrics", lambda db, ex, environment, **kwargs: expected_metrics)
 
     response = TestClient(main.app).get("/api/account")
 
@@ -78,7 +78,7 @@ def test_account_keeps_balance_when_metrics_calculation_fails(monkeypatch):
     monkeypatch.setattr(main, "require_auth", lambda request: None)
     monkeypatch.setattr("spot_bot.exchange.BinanceSpot", FakeExchange)
 
-    def fail_metrics(db, ex, environment):
+    def fail_metrics(db, ex, environment, **kwargs):
         raise RuntimeError("market data unavailable")
 
     monkeypatch.setattr(main, "dashboard_metrics", fail_metrics)
