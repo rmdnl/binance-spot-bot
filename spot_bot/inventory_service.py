@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.orm import Session
 
 from .models import InventoryApplication, InventoryPosition, RealizedPNLEntry, SpotFill
@@ -98,6 +99,24 @@ def _reserve_application(db: Session, fill: SpotFill) -> bool:
 
 
 def apply_fill(db: Session, fill: SpotFill) -> InventoryResult:
+    """Apply a fill atomically, retrying once after a stale inventory snapshot."""
+    for attempt in range(2):
+        try:
+            # The savepoint keeps a failed optimistic update from poisoning the
+            # caller's transaction, so reconciliation can retain its new fill.
+            with db.begin_nested():
+                result = _apply_fill_once(db, fill)
+            return result
+        except StaleDataError:
+            if attempt:
+                raise
+            # Reload the inventory version committed by the winning worker and
+            # recompute the accounting delta instead of returning a transient 502.
+            db.expire_all()
+    raise RuntimeError("unreachable inventory retry state")
+
+
+def _apply_fill_once(db: Session, fill: SpotFill) -> InventoryResult:
     """Apply one exchange fill and its realized PNL atomically within caller transaction."""
     amount = _decimal(fill.amount)
     quote_amount = _decimal(fill.quote_amount)
