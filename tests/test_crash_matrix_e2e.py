@@ -1,7 +1,7 @@
 from decimal import Decimal as D
 
 import ccxt
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session
 
 from spot_bot.grid_engine import initial_order_plans, submit_grid_order
@@ -64,6 +64,17 @@ class CrashMatrixAdapter:
 
 def db_session():
     engine = create_engine("sqlite:///:memory:")
+
+    # Disable sqlite3's legacy transaction control and let SQLAlchemy
+    # emit BEGIN explicitly, so SAVEPOINT operations roll back correctly.
+    @event.listens_for(engine, "connect")
+    def disable_driver_transaction_control(dbapi_connection, _record):
+        dbapi_connection.isolation_level = None
+
+    @event.listens_for(engine, "begin")
+    def emit_begin(connection):
+        connection.exec_driver_sql("BEGIN")
+
     Base.metadata.create_all(engine)
     return Session(engine)
 
@@ -248,3 +259,80 @@ def test_crash_matrix_partial_fill_reconcile_then_second_reconcile_no_duplicate(
     position = db.scalar(select(InventoryPosition).where(InventoryPosition.symbol == "BTC/USDT"))
     assert position.base_quantity == D("0.005000000000")
     assert position.quote_cost == D("400.040000000000")
+
+
+def test_crash_matrix_accounting_rollback_then_restart_applies_once():
+    db = db_session()
+    make_position(db)
+    adapter = CrashMatrixAdapter(
+        trades=[
+            {
+                "id": "trade-crash-rollback-1",
+                "order": "exchange-rollback-1",
+                "amount": "0.01",
+                "price": "80000",
+                "cost": "800",
+                "fee": {"cost": "0.08", "currency": "USDT"},
+            }
+        ],
+    )
+    order = SpotOrder(
+        environment=Environment.TESTNET.value,
+        symbol="BTC/USDT",
+        side="buy",
+        order_type="limit",
+        status=OrderStatus.FILLED.value,
+        amount=D("0.01"),
+        price=D("80000"),
+        client_order_id="crash-rollback-001",
+        exchange_order_id="exchange-rollback-1",
+    )
+    db.add(order)
+    db.commit()
+
+    # Simulate a crash before the fill/accounting transaction commits.
+    assert record_fills(db, adapter, order) == 1
+    assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
+
+    position = db.scalar(
+        select(InventoryPosition).where(
+            InventoryPosition.environment == Environment.TESTNET.value,
+            InventoryPosition.symbol == "BTC/USDT",
+        )
+    )
+    assert position.base_quantity == D("0.010000000000")
+    assert position.quote_cost == D("800.080000000000")
+
+    db.rollback()
+
+    # Rollback must undo both fill persistence and inventory accounting.
+    assert counts(db) == {"fills": 0, "applications": 0, "pnl": 0}
+    position = db.scalar(
+        select(InventoryPosition).where(
+            InventoryPosition.environment == Environment.TESTNET.value,
+            InventoryPosition.symbol == "BTC/USDT",
+        )
+    )
+    assert position.base_quantity == D("0")
+    assert position.quote_cost == D("0")
+
+    # Restart/reconcile discovers the exchange trade and applies it once.
+    assert record_fills(db, adapter, order) == 1
+    db.commit()
+    assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
+
+    position = db.scalar(
+        select(InventoryPosition).where(
+            InventoryPosition.environment == Environment.TESTNET.value,
+            InventoryPosition.symbol == "BTC/USDT",
+        )
+    )
+    assert position.base_quantity == D("0.010000000000")
+    assert position.quote_cost == D("800.080000000000")
+
+    # A repeated reconcile must not duplicate inventory or PnL.
+    assert record_fills(db, adapter, order) == 0
+    db.commit()
+    assert counts(db) == {"fills": 1, "applications": 1, "pnl": 0}
+    assert position.base_quantity == D("0.010000000000")
+    assert position.quote_cost == D("800.080000000000")
