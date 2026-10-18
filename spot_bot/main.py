@@ -17,13 +17,19 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .db import get_db
+from .db import get_db, init_db
 from .grid import build_grid
 from .models import RiskState, SpotOrder
 
 BASE = Path(__file__).resolve().parent
 settings = get_settings()
 app = FastAPI(title="Binance Spot Bot", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.on_event("startup")
+def migrate_database_before_serving() -> None:
+    """Apply pending schema migrations before the app serves requests."""
+    init_db()
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
