@@ -49,7 +49,7 @@ def test_historical_price_uses_latest_market_trade_not_after_fill_time():
             return [
                 {"timestamp": since + 1000, "price": "2"},
                 {"timestamp": since + 2000, "price": "3"},
-                {"timestamp": since + 3000, "price": "999"},
+                {"timestamp": since + 6000, "price": "999"},
             ]
 
     adapter = object.__new__(BinanceSpot)
