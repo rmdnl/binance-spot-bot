@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .db import get_db
 from .exchange import BinanceSpot
 from .grid_engine import execute_initial_grid, pause_grid_execution, resume_grid_execution, stop_grid_execution
-from .grid_service import grid_open_order_ids, initial_grid_orders, start_grid
+from .grid_service import grid_open_order_ids, initial_grid_orders, materialize_levels, start_grid
 from .models import Environment, GridBot, GridConfig, GridLevel, GridStatus
 
 router = APIRouter(prefix="/api/grid", tags=["grid"])
@@ -40,7 +40,7 @@ def adapter_for(bot: GridBot) -> BinanceSpot:
 def create_grid(
     request: Request, environment: str = Form(...), symbol: str = Form(...), lower_price: str = Form(...),
     upper_price: str = Form(...), grids: int = Form(...), capital_quote: str = Form(...),
-    grid_type: str = Form("arithmetic"), max_open_orders: int = Form(20), csrf_token: str = Form(...),
+    grid_type: str = Form("arithmetic"), max_open_orders: int = Form(20), trigger_price: str = Form(""), csrf_token: str = Form(...),
     db: Session = Depends(get_db),
 ):
     try:
@@ -48,11 +48,14 @@ def create_grid(
         env = Environment(environment.lower())
         config = GridConfig(symbol.upper(), D(lower_price), D(upper_price), grids, D(capital_quote), grid_type.lower(), max_open_orders)
         preview = initial_grid_orders(config)
+        trigger = D(trigger_price) if trigger_price.strip() else None
+        if trigger is not None and (not trigger.is_finite() or trigger <= 0):
+            raise ValueError("trigger price must be a finite positive number")
         bot = GridBot(
             environment=env.value, symbol=config.symbol, grid_type=config.grid_type,
             lower_price=config.lower_price, upper_price=config.upper_price, grids=config.grids,
             capital_quote=config.capital, max_open_orders=config.max_open_orders,
-            status=GridStatus.DRAFT.value,
+            trigger_price=trigger, status=GridStatus.DRAFT.value,
         )
         db.add(bot)
         db.commit()
@@ -67,9 +70,27 @@ def start_grid_bot(request: Request, bot_id: int, csrf_token: str = Form(...), d
     try:
         guard(request, csrf_token)
         bot = get_bot(db, bot_id)
-        levels = start_grid(db, bot)
-        db.commit()
-        results = execute_initial_grid(db, adapter_for(bot), bot)
+        if bot.trigger_price is not None:
+            adapter = adapter_for(bot)
+            ticker = adapter.ticker(bot.symbol)
+            raw_price = ticker.get("last") or ticker.get("close")
+            current_price = D(str(raw_price or "0"))
+            if not current_price.is_finite() or current_price <= 0:
+                raise ValueError("exchange ticker has no usable price; grid remains unstarted")
+            levels = materialize_levels(db, bot)
+            if current_price > bot.trigger_price:
+                bot.status = GridStatus.ARMED.value
+                db.commit()
+                return {"id": bot.id, "status": bot.status, "levels": len(levels),
+                        "submitted": 0, "open_orders": [], "trigger_price": str(bot.trigger_price),
+                        "current_price": str(current_price)}
+            bot.status = GridStatus.RUNNING.value
+            db.commit()
+            results = execute_initial_grid(db, adapter, bot)
+        else:
+            levels = start_grid(db, bot)
+            db.commit()
+            results = execute_initial_grid(db, adapter_for(bot), bot)
     except ValueError as exc:
         db.rollback()
         return JSONResponse({"error": str(exc)}, 400)
@@ -128,6 +149,7 @@ def list_grid_bots(request: Request, db: Session = Depends(get_db)):
         "upper_price": str(bot.upper_price),
         "grids": bot.grids,
         "capital_quote": str(bot.capital_quote),
+        "trigger_price": str(bot.trigger_price) if bot.trigger_price is not None else None,
         "open_orders": grid_open_order_ids(db, bot),
     } for bot in bots]
 
@@ -162,7 +184,7 @@ def grid_status(request: Request, bot_id: int, db: Session = Depends(get_db)):
         "id": bot.id, "status": bot.status, "symbol": bot.symbol,
         "environment": bot.environment, "lower_price": str(bot.lower_price),
         "upper_price": str(bot.upper_price), "grids": bot.grids,
-        "capital_quote": str(bot.capital_quote), "open_orders": grid_open_order_ids(db, bot),
+        "capital_quote": str(bot.capital_quote), "trigger_price": str(bot.trigger_price) if bot.trigger_price is not None else None, "open_orders": grid_open_order_ids(db, bot),
         "current_price": str(current_price) if current_price is not None else None,
         "price_error": price_error, "nearest_level": nearest_level,
         "levels": [{"index": x.level_index, "price": str(x.price),
