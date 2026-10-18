@@ -193,9 +193,9 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
     if order.exchange_order_id:
         # Prefer an exchange-order-scoped query so a delayed fill cannot fall
         # out of the account's latest 100 trades before the next reconciliation.
-        fetch_for_order = getattr(adapter, "trades_for_order", None)
+        fetch_for_order = getattr(type(adapter), "trades_for_order", None)
         trades = (
-            fetch_for_order(order.symbol, order.exchange_order_id)
+            fetch_for_order(adapter, order.symbol, order.exchange_order_id)
             if callable(fetch_for_order)
             else adapter.recent_trades(order.symbol, limit=100)
         )
