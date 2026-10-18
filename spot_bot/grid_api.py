@@ -85,8 +85,8 @@ def start_grid_bot(request: Request, bot_id: int, csrf_token: str = Form(...), d
                         "submitted": 0, "open_orders": [], "trigger_price": str(bot.trigger_price),
                         "current_price": str(current_price)}
             bot.status = GridStatus.RUNNING.value
-            db.commit()
             results = execute_initial_grid(db, adapter, bot)
+            db.commit()
         else:
             levels = start_grid(db, bot)
             db.commit()
