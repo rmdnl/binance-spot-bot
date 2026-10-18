@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -29,9 +30,18 @@ BASE = Path(__file__).resolve().parent
 settings = get_settings()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Apply pending schema migrations before serving requests."""
+    """Apply migrations and run the automatic grid order monitor."""
     init_db()
-    yield
+    from .grid_monitor import grid_monitor_loop
+
+    stop_event = asyncio.Event()
+    monitor_task = asyncio.create_task(grid_monitor_loop(stop_event))
+    try:
+        yield
+    finally:
+        stop_event.set()
+        monitor_task.cancel()
+        await asyncio.gather(monitor_task, return_exceptions=True)
 
 
 app = FastAPI(
