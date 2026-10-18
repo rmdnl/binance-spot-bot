@@ -165,10 +165,14 @@ class InventoryPosition(Base):
     quote_asset: Mapped[str] = mapped_column(String(20))
     base_quantity: Mapped[D] = mapped_column(AccountingNumeric(), default=D("0"))
     quote_cost: Mapped[D] = mapped_column(AccountingNumeric(), default=D("0"))
+    # Optimistic concurrency prevents simultaneous fills from losing inventory updates.
+    version_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
     __table_args__ = (
         UniqueConstraint("environment", "symbol", name="uq_inventory_environment_symbol"),
     )
+
+    __mapper_args__ = {"version_id_col": version_id}  # noqa: RUF012
 
 
 class InventoryApplication(Base):
