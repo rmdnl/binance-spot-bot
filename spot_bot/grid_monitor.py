@@ -5,12 +5,12 @@ import logging
 from collections.abc import Callable
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
 from .exchange import BinanceSpot
-from .grid_engine import opposite_plan, reconcile_grid_order, submit_grid_order, _resume_terminal_orders
+from .grid_engine import execute_initial_grid, opposite_plan, reconcile_grid_order, submit_grid_order, _resume_terminal_orders
 from .grid_service import grid_open_order_ids
 from .models import Environment, GridBot, GridLevel, GridStatus, OrderSide, OrderStatus, SpotOrder
 
@@ -25,13 +25,48 @@ def monitor_grid_once(db: Session, bot: GridBot, adapter: BinanceSpot) -> dict:
     The exchange's resting LIMIT_MAKER orders are the price triggers. This loop
     observes confirmed exchange fills; it never fabricates fills from ticker data.
     """
-    if bot.status != GridStatus.RUNNING.value:
+    if bot.status not in {GridStatus.ARMED.value, GridStatus.RUNNING.value}:
         return {"bot_id": bot.id, "reconciled": 0, "advanced": 0, "status": bot.status}
 
     ticker = adapter.ticker(bot.symbol)
     price = D(str(ticker.get("last") or ticker.get("close") or "0"))
     if not price.is_finite() or price <= 0:
         raise RuntimeError(f"grid {bot.id}: ticker has no usable price")
+
+    if bot.status == GridStatus.ARMED.value:
+        trigger = D(str(bot.trigger_price)) if bot.trigger_price is not None else None
+        if trigger is None:
+            return {"bot_id": bot.id, "price": str(price), "reconciled": 0,
+                    "advanced": 0, "status": bot.status, "trigger_error": "armed grid has no trigger price"}
+        if price > trigger:
+            return {"bot_id": bot.id, "price": str(price), "trigger_price": str(trigger),
+                    "reconciled": 0, "advanced": 0, "status": bot.status}
+        # Compare-and-set prevents duplicate activation when multiple monitors race.
+        result = db.execute(
+            update(GridBot)
+            .where(GridBot.id == bot.id, GridBot.status == GridStatus.ARMED.value)
+            .values(status=GridStatus.RUNNING.value)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            db.refresh(bot)
+            return {"bot_id": bot.id, "price": str(price), "reconciled": 0,
+                    "advanced": 0, "status": bot.status}
+        db.commit()
+        db.refresh(bot)
+        submitted = execute_initial_grid(db, adapter, bot)
+        return {"bot_id": bot.id, "price": str(price), "trigger_price": str(trigger),
+                "reconciled": 0, "advanced": 0, "submitted": len(submitted),
+                "status": bot.status, "triggered": True}
+
+    # Recover a crash after activation committed but before first order intent.
+    levels_before = db.scalars(select(GridLevel).where(GridLevel.bot_id == bot.id)).all()
+    if levels_before and not any(level.buy_order_id or level.sell_order_id for level in levels_before):
+        submitted = execute_initial_grid(db, adapter, bot)
+        if submitted:
+            return {"bot_id": bot.id, "price": str(price), "reconciled": 0,
+                    "advanced": 0, "submitted": len(submitted), "status": bot.status,
+                    "recovered_activation": True}
 
     reconciled = 0
     advanced = 0
@@ -96,7 +131,7 @@ def monitor_running_grids_once(
 ) -> None:
     db = session_factory()
     try:
-        bots = db.scalars(select(GridBot).where(GridBot.status == GridStatus.RUNNING.value)).all()
+        bots = db.scalars(select(GridBot).where(GridBot.status.in_([GridStatus.ARMED.value, GridStatus.RUNNING.value]))).all()
         adapters: dict[str, BinanceSpot] = {}
         for bot in bots:
             try:
