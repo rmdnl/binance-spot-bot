@@ -88,6 +88,8 @@ def create_spot_order(
         type_enum = OrderType(order_type.lower().strip())
         amount_d = D(amount)
         price_d = D(price) if price else None
+        if type_enum == OrderType.MARKET:
+            price_d = None
         sl_d = D(stop_loss_price) if (stop_loss_price or "").strip() else None
         tp_d = D(take_profit_price) if (take_profit_price or "").strip() else None
         if not amount_d.is_finite() or amount_d <= 0:
