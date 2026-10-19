@@ -162,7 +162,97 @@
       button.disabled = false;
     }
   });
+
+  const manualForm = document.getElementById('manual-spot-form');
+  const manualMessage = document.getElementById('manual-message');
+  const manualType = document.getElementById('manual-order-type');
+  const manualPrice = document.getElementById('manual-price');
+  const manualSide = document.getElementById('manual-side');
+  function syncManualFields() {
+    const market = manualType?.value === 'market';
+    if (manualPrice) { manualPrice.disabled = market; manualPrice.required = !market; if (market) manualPrice.value = ''; }
+    const sell = manualSide?.value === 'sell';
+    for (const field of [document.getElementById('manual-sl'), document.getElementById('manual-tp')]) {
+      if (field) { field.disabled = sell; if (sell) field.value = ''; }
+    }
+  }
+  manualType?.addEventListener('change', syncManualFields);
+  manualSide?.addEventListener('change', syncManualFields);
+  syncManualFields();
+  manualForm?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const button = document.getElementById('manual-submit');
+    if (button) button.disabled = true;
+    if (manualMessage) { manualMessage.className = 'muted'; manualMessage.textContent = 'Validating and submitting order…'; }
+    try {
+      const d = await json('/api/spot/orders', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams(new FormData(manualForm))
+      });
+      if (manualMessage) {
+        manualMessage.className = 'muted';
+        manualMessage.textContent = 'Order #' + d.id + ' status ' + d.status +
+          (d.protection ? '. SL/TP protection #' + d.protection.id + ' saved (' + d.protection.status + ').' : '.') +
+          (d.error ? ' ' + d.error : '');
+      }
+      await refreshSpotPanels();
+    } catch (err) {
+      if (manualMessage) { manualMessage.className = 'alert'; manualMessage.textContent = err.message; }
+    } finally { if (button) button.disabled = false; }
+  });
+  async function refreshSpotPanels() {
+    const protectionEl = document.getElementById('spot-protections');
+    const ordersEl = document.getElementById('spot-orders');
+    if (!protectionEl || !ordersEl) return;
+    try {
+      const [protections, orders] = await Promise.all([
+        json('/api/spot/protections'), json('/api/orders')
+      ]);
+      protectionEl.innerHTML = protections.length ? protections.map(p => {
+        const levels = ['SL ' + (p.stop_loss_price || 'off'), 'TP ' + (p.take_profit_price || 'off')].join(' · ');
+        const price = p.last_price ? 'Last ' + p.last_price : 'Price pending';
+        const detail = levels + ' · Qty ' + p.protected_quantity + ' · ' + price +
+          (p.trigger_reason ? ' · Triggered: ' + p.trigger_reason.replace('_',' ') : '') +
+          (p.exit_order_id ? ' · Exit order #' + p.exit_order_id : '');
+        return '<article class="strategy-row"><div class="coin-icon">⛨</div><div class="strategy-name"><b>' + esc(p.symbol) + ' · Protection #' + esc(p.id) + '</b><small>Entry #' + esc(p.entry_order_id) + ' · ' + esc(p.environment.toUpperCase()) + ' · ' + esc(detail) + '</small>' +
+          (p.last_error ? '<small class="protection-error">' + esc(p.last_error) + '</small>' : '') +
+          (p.status === 'waiting_entry' ? '<small>Protection starts after the entry order is fully filled or terminal with a partial fill.</small>' : '') +
+          '</div><span class="state-chip">' + esc(p.status.toUpperCase()) + '</span></article>';
+      }).join('') : '<div class="empty-state"><b>No manual SL/TP rules</b><p>Attach stop loss or take profit when submitting a BUY order.</p></div>';
+      ordersEl.innerHTML = orders.length ? orders.map(o => {
+        const active = ['new','open','partially_filled'].includes(o.status);
+        const actions = active ? '<button class="button secondary" data-spot-action="reconcile" data-spot-id="' + esc(o.id) + '">Sync</button><button class="button secondary" data-spot-action="cancel" data-spot-id="' + esc(o.id) + '">Cancel</button>' : '';
+        return '<article class="strategy-row"><div class="coin-icon">▤</div><div class="strategy-name"><b>#' + esc(o.id) + ' · ' + esc(o.symbol) + ' · ' + esc(o.side.toUpperCase()) + '</b><small>' + esc(o.environment.toUpperCase()) + ' · ' + esc(o.type.toUpperCase()) + ' · Qty ' + esc(o.filled) + '/' + esc(o.amount) + ' · Price ' + esc(o.price || o.average_price || 'market') + (o.exchange_order_id ? ' · Exchange #' + esc(o.exchange_order_id) : '') + '</small>' + (o.error ? '<small class="protection-error">' + esc(o.error) + '</small>' : '') + '</div><span class="state-chip">' + esc(o.status.toUpperCase()) + '</span><div class="top-actions">' + actions + '</div></article>';
+      }).join('') : '<div class="empty-state"><b>No Spot orders yet</b><p>Submitted manual and grid orders will appear here.</p></div>';
+    } catch (err) {
+      protectionEl.innerHTML = '<div class="alert">' + esc(err.message) + '</div>';
+      ordersEl.innerHTML = '<div class="alert">Could not load order ledger.</div>';
+    }
+  }
+  document.getElementById('spot-refresh')?.addEventListener('click', refreshSpotPanels);
+  document.getElementById('spot-orders')?.addEventListener('click', async e => {
+    const button = e.target.closest('[data-spot-action]');
+    if (!button) return;
+    const id = button.dataset.spotId;
+    const action = button.dataset.spotAction;
+    if (action === 'cancel' && !window.confirm('Cancel Spot order #' + id + '? Any already-filled quantity remains in your account.')) return;
+    button.disabled = true;
+    try {
+      await json('/api/spot/orders/' + encodeURIComponent(id) + '/' + action, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({csrf_token: csrf})
+      });
+      await refreshSpotPanels();
+    } catch (err) {
+      if (manualMessage) { manualMessage.className = 'alert'; manualMessage.textContent = err.message; }
+      button.disabled = false;
+    }
+  });
+
   refreshGridBots();
   if (gridBots) setInterval(refreshGridBots, 5000);
-  loadAccount(); refreshRisk();
+  loadAccount(); refreshRisk(); refreshSpotPanels();
+  setInterval(refreshSpotPanels, 5000);
 })();
