@@ -42,8 +42,11 @@ def _client_id() -> str:
     import secrets
     return "spot-" + secrets.token_hex(16)[:31]
 
-def create_intent(db: Session, request: OrderRequest) -> SpotOrder:
-    assert_trading_allowed(db)
+def create_intent(db: Session, request: OrderRequest, risk_reducing: bool = False) -> SpotOrder:
+    if not risk_reducing:
+        assert_trading_allowed(db)
+    elif request.side != OrderSide.SELL or request.order_type != OrderType.MARKET:
+        raise ValueError("risk_reducing is reserved for protective market sells")
     if request.amount <= 0:
         raise ValueError("amount must be positive")
     if request.order_type != OrderType.MARKET and (request.price is None or request.price <= 0):
