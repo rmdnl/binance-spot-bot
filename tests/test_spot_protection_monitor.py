@@ -80,12 +80,18 @@ def test_stop_loss_creates_one_persistent_market_exit_and_closes(monkeypatch, tm
     monitor.monitor_spot_protections_once(factory, lambda env: FakeAdapter(env, "89"))
     with factory() as db:
         protection = db.get(SpotProtection, protection_id)
-        assert protection.status == "closed"
+        assert protection.status == "exiting"
         assert protection.trigger_reason == "stop_loss"
         assert protection.exit_order_id is not None
         assert abs(protection.protected_quantity - Decimal("0.1")) < Decimal("0.000000000001")
     assert len(submitted) == 1
+
+    # The next monitor pass represents the worker after the durable exit intent
+    # has been persisted and then recovered/submitted.
     monitor.monitor_spot_protections_once(factory, lambda env: FakeAdapter(env, "89"))
+    with factory() as db:
+        protection = db.get(SpotProtection, protection_id)
+        assert protection.status == "closed"
     assert len(submitted) == 1
     engine.dispose()
 
@@ -93,12 +99,16 @@ def test_stop_loss_creates_one_persistent_market_exit_and_closes(monkeypatch, tm
 def test_take_profit_triggers_at_or_above_threshold(monkeypatch, tmp_path):
     engine, factory = setup_db(tmp_path)
     protection_id = add_protection(factory, price="111")
-    install_exit_fakes(monkeypatch)
+    submitted = install_exit_fakes(monkeypatch)
     monitor.monitor_spot_protections_once(factory, lambda env: FakeAdapter(env, "111"))
     with factory() as db:
         protection = db.get(SpotProtection, protection_id)
-        assert protection.status == "closed"
+        assert protection.status == "exiting"
         assert protection.trigger_reason == "take_profit"
+    assert len(submitted) == 1
+    monitor.monitor_spot_protections_once(factory, lambda env: FakeAdapter(env, "111"))
+    with factory() as db:
+        assert db.get(SpotProtection, protection_id).status == "closed"
     engine.dispose()
 
 
