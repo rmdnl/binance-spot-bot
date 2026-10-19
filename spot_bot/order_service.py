@@ -74,9 +74,12 @@ def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any], *, allow_reject
     if fee.get("cost") is not None and str(fee.get("currency") or "") == order.symbol.split("/")[1]:
         order.fee_quote = D(str(fee["cost"])).quantize(FEE_SCALE)
 
-def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False) -> SubmitResult:
-    assert_trading_allowed(db)
-    enforce_equity_drawdown_limit(db, adapter, Environment(order.environment))
+def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False, risk_reducing: bool = False) -> SubmitResult:
+    if not risk_reducing:
+        assert_trading_allowed(db)
+        enforce_equity_drawdown_limit(db, adapter, Environment(order.environment))
+    elif order.side != OrderSide.SELL.value or order.order_type != OrderType.MARKET.value:
+        raise ValueError("risk_reducing is reserved for protective market sells")
     if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
     request = OrderRequest(Environment(order.environment), order.symbol, OrderSide(order.side), OrderType(order.order_type), order.amount, order.price, order.client_order_id, post_only or order.order_type == OrderType.LIMIT_MAKER.value)
@@ -107,8 +110,11 @@ def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only:
     db.flush()
     return SubmitResult(order, raw)
 
-def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False) -> SubmitResult:
-    assert_trading_allowed(db)
+def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False, risk_reducing: bool = False) -> SubmitResult:
+    if not risk_reducing:
+        assert_trading_allowed(db)
+    elif order.side != OrderSide.SELL.value or order.order_type != OrderType.MARKET.value:
+        raise ValueError("risk_reducing is reserved for protective market sells")
     if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
     try:
@@ -124,7 +130,7 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
         return SubmitResult(order, existing)
 
     try:
-        return submit_order(db, adapter, order, post_only)
+        return submit_order(db, adapter, order, post_only, risk_reducing=risk_reducing)
     except Exception:
         # Another worker may have submitted this same durable intent after our
         # first lookup, or the exchange may have accepted our request before a
