@@ -55,11 +55,9 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                         db.commit()
                         continue
                     else:
-                        # A resting entry has no filled position to protect yet.
                         continue
 
                 if protection.status == "armed":
-                    # Keep protected quantity aligned with any new partial fills.
                     protection.protected_quantity = qty
                     ticker = adapter.ticker(protection.symbol)
                     raw = ticker.get("last") or ticker.get("close")
@@ -76,7 +74,6 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                         db.commit()
                         continue
 
-                    # If a limit entry partially filled, cancel its remainder before sizing the exit.
                     if entry.status in ACTIVE:
                         cancel_order(db, adapter, entry)
                         record_fills(db, adapter, entry)
@@ -90,7 +87,6 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                         db.commit()
                         continue
 
-                    # Persist the unique exit intent and EXITING state before network I/O.
                     result = db.execute(
                         update(SpotProtection)
                         .where(SpotProtection.id == protection.id, SpotProtection.status == "armed")
@@ -124,27 +120,25 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                         db.commit()
                     elif exit_order.status == OrderStatus.FILLED.value:
                         record_fills(db, adapter, exit_order)
+                        protection.status = "closed"
+                        protection.last_error = None
                         db.commit()
-                    elif exit_order.status in {OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value}:
+                    elif exit_order.status in {OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value, OrderStatus.REJECTED.value}:
                         remaining = D(str(exit_order.amount)) - D(str(exit_order.filled_amount or "0"))
                         if remaining > 0:
                             replacement = create_intent(db, OrderRequest(
                                 env, protection.symbol, OrderSide.SELL, OrderType.MARKET, remaining,
                             ), risk_reducing=True)
                             protection.exit_order_id = replacement.id
-                            protection.last_error = "Protective exit was canceled/expired; retrying remaining quantity"
+                            protection.last_error = "Protective exit terminated before full fill; retrying remaining quantity"
                             db.commit()
                         else:
                             protection.status = "closed"
                             protection.last_error = None
                             db.commit()
-                    elif exit_order.status not in {OrderStatus.FILLED.value, OrderStatus.REJECTED.value}:
+                    else:
                         protection.status = "error"
                         protection.last_error = f"Protective exit reached unexpected state: {exit_order.status}"
-                        db.commit()
-                    if exit_order.status == OrderStatus.FILLED.value:
-                        protection.status = "closed"
-                        protection.last_error = None
                         db.commit()
             except Exception as exc:
                 db.rollback()
