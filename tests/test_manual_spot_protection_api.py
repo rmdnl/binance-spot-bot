@@ -2,12 +2,12 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from spot_bot import main, spot_api
 from spot_bot.db import get_db
-from spot_bot.models import Base, SpotOrder, SpotProtection
+from spot_bot.models import Base, SpotOrder
 
 
 class FakeAdapter:
