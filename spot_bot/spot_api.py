@@ -9,7 +9,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from .db import get_db
 from .exchange import BinanceSpot
-from .models import Environment, OrderRequest, OrderSide, OrderStatus, OrderType, SpotOrder
+from .models import Environment, OrderRequest, OrderSide, OrderStatus, OrderType, SpotOrder, SpotProtection
 from .order_service import cancel_order, create_intent, record_fills, reconcile_order, recover_or_submit
 
 router = APIRouter(prefix="/api/spot", tags=["spot"])
@@ -75,32 +75,63 @@ def create_spot_order(
     request: Request,
     environment: str = Form(...), symbol: str = Form(...), side: str = Form(...),
     order_type: str = Form(...), amount: str = Form(...), price: str | None = Form(None),
+    stop_loss_price: str | None = Form(None), take_profit_price: str | None = Form(None),
     csrf_token: str = Form(...), db: Session = Depends(get_db),
 ):
     require_auth(request)
     require_csrf(request, csrf_token)
+    adapter = None
+    protection_requested = bool((stop_loss_price or "").strip() or (take_profit_price or "").strip())
     try:
         env = Environment(environment.lower().strip())
         side_enum = OrderSide(side.lower().strip())
         type_enum = OrderType(order_type.lower().strip())
         amount_d = D(amount)
         price_d = D(price) if price else None
+        sl_d = D(stop_loss_price) if (stop_loss_price or "").strip() else None
+        tp_d = D(take_profit_price) if (take_profit_price or "").strip() else None
+        if not amount_d.is_finite() or amount_d <= 0:
+            raise ValueError("amount must be finite and positive")
+        if price_d is not None and (not price_d.is_finite() or price_d <= 0):
+            raise ValueError("price must be finite and positive")
+        for label, value in (("stop loss", sl_d), ("take profit", tp_d)):
+            if value is not None and (not value.is_finite() or value <= 0):
+                raise ValueError(f"{label} must be finite and positive")
+        if protection_requested:
+            if side_enum != OrderSide.BUY:
+                raise ValueError("SL/TP protection can only be attached to a manual BUY order")
+            adapter = BinanceSpot(env)
+            reference = price_d
+            if type_enum == OrderType.MARKET:
+                ticker = adapter.ticker(symbol.upper().strip())
+                reference = D(str(ticker.get("last") or ticker.get("close") or "0"))
+            if reference is None or not reference.is_finite() or reference <= 0:
+                raise ValueError("cannot determine a valid entry reference price for SL/TP")
+            if sl_d is not None and sl_d >= reference:
+                raise ValueError("stop loss must be below the BUY entry/reference price")
+            if tp_d is not None and tp_d <= reference:
+                raise ValueError("take profit must be above the BUY entry/reference price")
     except (ValueError, ArithmeticError) as exc:
         raise HTTPException(400, f"Invalid order parameters: {exc}") from exc
-    req = OrderRequest(env, symbol.upper().strip(), side_enum, type_enum, amount_d, price_d, None, type_enum == OrderType.LIMIT_MAKER)
 
-    # Transaction 1: persist the intent before any Binance network side effect.
+    req = OrderRequest(env, symbol.upper().strip(), side_enum, type_enum, amount_d, price_d, None, type_enum == OrderType.LIMIT_MAKER)
     try:
         order = create_intent(db, req)
+        protection = None
+        if protection_requested:
+            protection = SpotProtection(
+                entry_order_id=order.id, environment=env.value, symbol=req.symbol,
+                stop_loss_price=sl_d, take_profit_price=tp_d, status="waiting_entry",
+            )
+            db.add(protection)
         db.commit()
     except Exception:
         db.rollback()
         raise
 
-    # Binance I/O stays outside the durable intent transaction. The client ID
-    # makes replay safe if a stale inventory write aborts accounting.
+    # Persist entry intent and protection policy before the exchange side effect.
     try:
-        adapter = BinanceSpot(env)
+        adapter = adapter or BinanceSpot(env)
         order, result = _commit_order_transaction(
             db, order.id, lambda current: recover_or_submit(db, adapter, current)
         )
@@ -109,7 +140,15 @@ def create_spot_order(
         current = db.get(SpotOrder, order.id)
         status = current.status if current else order.status
         return JSONResponse({"id": order.id, "status": status, "error": str(exc), "recoverable": True}, status_code=502)
-    return order_response(result.order)
+    payload = order_response(result.order)
+    if protection_requested:
+        db.refresh(protection)
+        payload["protection"] = {
+            "id": protection.id, "status": protection.status,
+            "stop_loss_price": str(protection.stop_loss_price) if protection.stop_loss_price is not None else None,
+            "take_profit_price": str(protection.take_profit_price) if protection.take_profit_price is not None else None,
+        }
+    return payload
 
 
 @router.post("/orders/{order_id}/cancel")
@@ -158,3 +197,18 @@ def reconcile(order_id: int, request: Request, csrf_token: str = Form(...), db: 
         status = current.status if current else order.status
         return JSONResponse({"id": order_id, "status": status, "error": str(exc), "recoverable": True}, status_code=502)
     return order_response(order)
+
+
+@router.get("/protections")
+def list_spot_protections(request: Request, db: Session = Depends(get_db)):
+    require_auth(request)
+    rows = db.scalars(select(SpotProtection).order_by(SpotProtection.updated_at.desc()).limit(100)).all()
+    return [{
+        "id": row.id, "entry_order_id": row.entry_order_id, "exit_order_id": row.exit_order_id,
+        "environment": row.environment, "symbol": row.symbol, "status": row.status,
+        "stop_loss_price": str(row.stop_loss_price) if row.stop_loss_price is not None else None,
+        "take_profit_price": str(row.take_profit_price) if row.take_profit_price is not None else None,
+        "protected_quantity": str(row.protected_quantity),
+        "last_price": str(row.last_price) if row.last_price is not None else None,
+        "trigger_reason": row.trigger_reason, "last_error": row.last_error,
+    } for row in rows]
