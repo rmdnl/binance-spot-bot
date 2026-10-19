@@ -1,5 +1,6 @@
 from decimal import Decimal
-from sqlalchemy import create_engine
+
+from sqlalchemy import create_engine, update
 from sqlalchemy.orm import sessionmaker
 
 from spot_bot.models import Base, OrderSide, OrderStatus, OrderType, SpotOrder, SpotProtection
@@ -113,3 +114,30 @@ def test_protection_waits_when_price_is_inside_range(monkeypatch, tmp_path):
         assert protection.exit_order_id is None
     assert submitted == []
     engine.dispose()
+
+
+def test_two_workers_can_claim_only_one_exit_intent(tmp_path):
+    engine, factory = setup_db(tmp_path)
+    protection_id = add_protection(factory)
+    first = factory()
+    second = factory()
+    try:
+        first_result = first.execute(
+            update(SpotProtection)
+            .where(SpotProtection.id == protection_id, SpotProtection.status == "armed")
+            .values(status="exiting", trigger_reason="stop_loss")
+        )
+        assert first_result.rowcount == 1
+        first.commit()
+
+        second_result = second.execute(
+            update(SpotProtection)
+            .where(SpotProtection.id == protection_id, SpotProtection.status == "armed")
+            .values(status="exiting", trigger_reason="stop_loss")
+        )
+        assert second_result.rowcount == 0
+        second.rollback()
+    finally:
+        first.close()
+        second.close()
+        engine.dispose()
