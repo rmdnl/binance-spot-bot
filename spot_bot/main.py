@@ -33,15 +33,25 @@ async def lifespan(_app: FastAPI):
     """Apply migrations and run the automatic grid order monitor."""
     init_db()
     from .grid_monitor import grid_monitor_loop
+    from .spot_protection_monitor import monitor_spot_protections_once
 
     stop_event = asyncio.Event()
     monitor_task = asyncio.create_task(grid_monitor_loop(stop_event))
+    async def protection_loop():
+        while not stop_event.is_set():
+            await asyncio.to_thread(monitor_spot_protections_once)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=2.0)
+            except TimeoutError:
+                pass
+    protection_task = asyncio.create_task(protection_loop())
     try:
         yield
     finally:
         stop_event.set()
         monitor_task.cancel()
-        await asyncio.gather(monitor_task, return_exceptions=True)
+        protection_task.cancel()
+        await asyncio.gather(monitor_task, protection_task, return_exceptions=True)
 
 
 app = FastAPI(
