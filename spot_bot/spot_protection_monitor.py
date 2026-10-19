@@ -121,6 +121,23 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                         reconcile_order(db, adapter, exit_order)
                         record_fills(db, adapter, exit_order)
                         db.commit()
+                    elif exit_order.status in {OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value}:
+                        remaining = D(str(exit_order.amount)) - D(str(exit_order.filled_amount or "0"))
+                        if remaining > 0:
+                            replacement = create_intent(db, OrderRequest(
+                                env, protection.symbol, OrderSide.SELL, OrderType.MARKET, remaining,
+                            ), risk_reducing=True)
+                            protection.exit_order_id = replacement.id
+                            protection.last_error = "Protective exit was canceled/expired; retrying remaining quantity"
+                            db.commit()
+                        else:
+                            protection.status = "closed"
+                            protection.last_error = None
+                            db.commit()
+                    elif exit_order.status not in {OrderStatus.FILLED.value, OrderStatus.REJECTED.value}:
+                        protection.status = "error"
+                        protection.last_error = f"Protective exit reached unexpected state: {exit_order.status}"
+                        db.commit()
                     if exit_order.status == OrderStatus.FILLED.value:
                         protection.status = "closed"
                         protection.last_error = None
