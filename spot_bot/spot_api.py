@@ -135,9 +135,12 @@ def create_spot_order(
     # Persist entry intent and protection policy before the exchange side effect.
     try:
         adapter = adapter or BinanceSpot(env)
-        order, result = _commit_order_transaction(
-            db, order.id, lambda current: recover_or_submit(db, adapter, current)
-        )
+        def submit_and_account(current: SpotOrder):
+            result = recover_or_submit(db, adapter, current)
+            record_fills(db, adapter, current)
+            return result
+
+        order, result = _commit_order_transaction(db, order.id, submit_and_account)
     except Exception as exc:
         db.rollback()
         current = db.get(SpotOrder, order.id)
