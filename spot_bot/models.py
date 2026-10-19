@@ -252,3 +252,25 @@ class RiskState(Base):
     halted: Mapped[bool] = mapped_column(Boolean, default=False)
     reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
+
+
+class SpotProtection(Base):
+    """Persistent app-managed SL/TP protection for one manual BUY order.
+
+    This is monitored by the bot process, not an exchange-native conditional order.
+    """
+    __tablename__ = "spot_protections"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entry_order_id: Mapped[int] = mapped_column(ForeignKey("spot_orders.id"), unique=True, index=True)
+    exit_order_id: Mapped[int | None] = mapped_column(ForeignKey("spot_orders.id"), nullable=True, unique=True)
+    environment: Mapped[str] = mapped_column(String(10), index=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    stop_loss_price: Mapped[D | None] = mapped_column(Numeric(38, 18), nullable=True)
+    take_profit_price: Mapped[D | None] = mapped_column(Numeric(38, 18), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="waiting_entry", index=True)
+    trigger_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    protected_quantity: Mapped[D] = mapped_column(Numeric(38, 18), default=D("0"))
+    last_price: Mapped[D | None] = mapped_column(Numeric(38, 18), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
