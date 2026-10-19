@@ -1,10 +1,10 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
-from spot_bot.models import Base, OrderSide, OrderStatus, OrderType, SpotFill, SpotOrder, SpotProtection
+from spot_bot.models import Base, OrderStatus, SpotOrder, SpotProtection
 import spot_bot.spot_protection_monitor as monitor
 
 
@@ -12,30 +12,9 @@ class FakeExchange:
     def __init__(self, price):
         self.price = price
         self.submitted = []
-        self.canceled = []
 
     def ticker(self, symbol):
         return {"last": self.price}
-
-    def fetch_order_by_client_id(self, symbol, client_id):
-        for item in self.submitted:
-            if item["clientOrderId"] == client_id:
-                return item
-        raise Exception("not found")
-
-    def fetch_order(self, order_id, symbol):
-        for item in self.submitted:
-            if str(item["id"]) == str(order_id):
-                return item
-        raise Exception("not found")
-
-    def cancel_order(self, order_id, symbol):
-        self.canceled.append(order_id)
-        for item in self.submitted:
-            if str(item["id"]) == str(order_id):
-                item["status"] = "canceled"
-                return item
-        raise Exception("not found")
 
 
 def test_restart_after_entry_fill_then_trigger_creates_single_exit(tmp_path, monkeypatch):
@@ -56,7 +35,6 @@ def test_restart_after_entry_fill_then_trigger_creates_single_exit(tmp_path, mon
         protection_id = protection.id
 
     fake = FakeExchange("89")
-    monkeypatch.setattr(monitor, "cancel_order", lambda db, adapter, order: order)
 
     def create_exit(db, request, risk_reducing=False):
         assert risk_reducing
@@ -65,9 +43,7 @@ def test_restart_after_entry_fill_then_trigger_creates_single_exit(tmp_path, mon
                           filled_amount=Decimal("0"), client_order_id=f"exit-{len(fake.submitted)+1}")
         db.add(order)
         db.flush()
-        fake.submitted.append({"id": order.id, "clientOrderId": order.client_order_id,
-                               "status": "closed", "filled": float(order.amount),
-                               "average": 89.0, "fee": {"cost": 0, "currency": "USDT"}})
+        fake.submitted.append(order.id)
         return order
 
     def recover(db, adapter, order, risk_reducing=False):
@@ -85,7 +61,9 @@ def test_restart_after_entry_fill_then_trigger_creates_single_exit(tmp_path, mon
     def factory():
         return Session(engine)
 
+    # First invocation represents the worker before a process restart.
     monitor.monitor_spot_protections_once(factory, lambda env: fake)
+    # Second invocation represents a fresh worker after restart.
     monitor.monitor_spot_protections_once(factory, lambda env: fake)
 
     with Session(engine) as db:
@@ -93,6 +71,6 @@ def test_restart_after_entry_fill_then_trigger_creates_single_exit(tmp_path, mon
         assert row.status == "closed"
         assert row.trigger_reason == "stop_loss"
         assert row.exit_order_id is not None
-        assert db.scalar(select(SpotOrder).where(SpotOrder.side == "sell").count()) if False else True
+        assert db.scalar(select(func.count()).select_from(SpotOrder).where(SpotOrder.side == "sell")) == 1
     assert len(fake.submitted) == 1
     engine.dispose()
