@@ -177,3 +177,16 @@ h3 { margin-bottom: 4px; font-size: 27px; letter-spacing: -.03em; }
   .hero-art { min-height: 175px; }
   .footer { flex-wrap: wrap; line-height: 1.6; }
 }
+
+.protection-error { color: var(--danger) !important; white-space: normal !important; }
+.strategy-row .top-actions { justify-content: flex-end; }
+#manual-message { margin-top: 12px; }
+#manual-message.alert { margin-top: 12px; }
+#spot-protections, #spot-orders { margin-top: 10px; }
+@media (max-width: 760px) {
+  .form-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .form-actions { align-items: stretch; flex-direction: column; }
+  .strategy-row { align-items: flex-start; flex-wrap: wrap; }
+  .strategy-row .strategy-name { flex-basis: calc(100% - 48px); }
+  .strategy-row .top-actions { width: 100%; justify-content: flex-start; }
+}
