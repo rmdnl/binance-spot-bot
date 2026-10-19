@@ -27,7 +27,7 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
         for protection in rows:
             try:
                 env = Environment(protection.environment)
-                adapter = adapters.setdefault(env.value, adapter_factory(env))
+                adapter = adapters[env.value] if env.value in adapters else adapters.setdefault(env.value, adapter_factory(env))
                 entry = db.get(SpotOrder, protection.entry_order_id)
                 if entry is None:
                     protection.status = "error"
@@ -40,7 +40,7 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                         reconcile_order(db, adapter, entry)
                         record_fills(db, adapter, entry)
                         db.commit()
-                    if entry.status not in TERMINAL:
+                    if entry.status not in (TERMINAL | {OrderStatus.REJECTED.value}):
                         continue
                     qty = D(str(entry.filled_amount or "0"))
                     if qty <= 0:
@@ -82,7 +82,7 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                     exit_order = create_intent(db, OrderRequest(
                         env, protection.symbol, OrderSide.SELL, OrderType.MARKET,
                         protection.protected_quantity,
-                    ))
+                    ), risk_reducing=True)
                     protection.exit_order_id = exit_order.id
                     db.commit()
 
