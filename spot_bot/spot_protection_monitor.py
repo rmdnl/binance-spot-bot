@@ -116,9 +116,13 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                         continue
                     if exit_order.status in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
                         recover_or_submit(db, adapter, exit_order, risk_reducing=True)
+                        record_fills(db, adapter, exit_order)
                         db.commit()
                     elif exit_order.status in ACTIVE:
                         reconcile_order(db, adapter, exit_order)
+                        record_fills(db, adapter, exit_order)
+                        db.commit()
+                    elif exit_order.status == OrderStatus.FILLED.value:
                         record_fills(db, adapter, exit_order)
                         db.commit()
                     elif exit_order.status in {OrderStatus.CANCELED.value, OrderStatus.EXPIRED.value}:
