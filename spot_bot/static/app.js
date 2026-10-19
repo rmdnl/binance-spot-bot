@@ -217,7 +217,7 @@
           (p.exit_order_id ? ' · Exit order #' + p.exit_order_id : '');
         return '<article class="strategy-row"><div class="coin-icon">⛨</div><div class="strategy-name"><b>' + esc(p.symbol) + ' · Protection #' + esc(p.id) + '</b><small>Entry #' + esc(p.entry_order_id) + ' · ' + esc(p.environment.toUpperCase()) + ' · ' + esc(detail) + '</small>' +
           (p.last_error ? '<small class="protection-error">' + esc(p.last_error) + '</small>' : '') +
-          (p.status === 'waiting_entry' ? '<small>Protection starts after the entry order is fully filled or terminal with a partial fill.</small>' : '') +
+          (p.status === 'waiting_entry' ? '<small>Protection starts after the first fill; a partial entry remainder is canceled if SL/TP triggers.</small>' : '') +
           '</div><span class="state-chip">' + esc(p.status.toUpperCase()) + '</span></article>';
       }).join('') : '<div class="empty-state"><b>No manual SL/TP rules</b><p>Attach stop loss or take profit when submitting a BUY order.</p></div>';
       ordersEl.innerHTML = orders.length ? orders.map(o => {
