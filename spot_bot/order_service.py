@@ -43,9 +43,10 @@ def _client_id() -> str:
     return "spot-" + secrets.token_hex(16)[:31]
 
 def create_intent(db: Session, request: OrderRequest, risk_reducing: bool = False) -> SpotOrder:
-    if not risk_reducing:
-        assert_trading_allowed(db)
-    elif request.side != OrderSide.SELL or request.order_type != OrderType.MARKET:
+    # Protective exits may bypass the entry-only halt/drawdown policy, but never
+    # bypass the global execution gate.
+    assert_trading_allowed(db)
+    if risk_reducing and (request.side != OrderSide.SELL or request.order_type != OrderType.MARKET):
         raise ValueError("risk_reducing is reserved for protective market sells")
     if request.amount <= 0:
         raise ValueError("amount must be positive")
@@ -62,9 +63,9 @@ def create_intent(db: Session, request: OrderRequest, risk_reducing: bool = Fals
     db.flush()
     return order
 
-def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any], *, allow_rejected_retry: bool = False) -> None:
+def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any], *, allow_reject_retry: bool = False) -> None:
     incoming = _map_status(raw.get("status"))
-    current = OrderStatus.NEW.value if allow_rejected_retry and order.status == OrderStatus.REJECTED.value else order.status
+    current = OrderStatus.NEW.value if allow_reject_retry and order.status == OrderStatus.REJECTED.value else order.status
     if incoming not in _ALLOWED_TRANSITIONS.get(current, {current}):
         raise ValueError(f"invalid order state transition: {order.status} -> {incoming}")
     order.exchange_order_id = str(raw.get("id")) if raw.get("id") is not None else order.exchange_order_id
@@ -78,11 +79,13 @@ def _apply_exchange_state(order: SpotOrder, raw: dict[str, Any], *, allow_reject
         order.fee_quote = D(str(fee["cost"])).quantize(FEE_SCALE)
 
 def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False, risk_reducing: bool = False) -> SubmitResult:
-    if not risk_reducing:
-        assert_trading_allowed(db)
+    # Every exchange submission remains behind the global execution gate.
+    assert_trading_allowed(db)
+    if risk_reducing:
+        if order.side != OrderSide.SELL.value or order.order_type != OrderType.MARKET.value:
+            raise ValueError("risk_reducing is reserved for protective market sells")
+    else:
         enforce_equity_drawdown_limit(db, adapter, Environment(order.environment))
-    elif order.side != OrderSide.SELL.value or order.order_type != OrderType.MARKET.value:
-        raise ValueError("risk_reducing is reserved for protective market sells")
     if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
     request = OrderRequest(Environment(order.environment), order.symbol, OrderSide(order.side), OrderType(order.order_type), order.amount, order.price, order.client_order_id, post_only or order.order_type == OrderType.LIMIT_MAKER.value)
@@ -91,10 +94,6 @@ def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only:
         adapter.validate_order(request)
         raw = adapter.create_order(request)
     except Exception as exc:
-        # A transport failure after submission is ambiguous: the exchange may
-        # have accepted the order even though this process never received its
-        # response. Keep the durable intent retryable so recovery can query by
-        # client_order_id instead of treating the order as definitely rejected.
         ambiguous = isinstance(
             exc,
             (
@@ -109,14 +108,13 @@ def submit_order(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only:
             order.error_message = str(exc)[:500]
         db.flush()
         raise
-    _apply_exchange_state(order, raw, allow_rejected_retry=retrying_rejected)
+    _apply_exchange_state(order, raw, allow_reject_retry=retrying_rejected)
     db.flush()
     return SubmitResult(order, raw)
 
 def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_only: bool = False, risk_reducing: bool = False) -> SubmitResult:
-    if not risk_reducing:
-        assert_trading_allowed(db)
-    elif order.side != OrderSide.SELL.value or order.order_type != OrderType.MARKET.value:
+    assert_trading_allowed(db)
+    if risk_reducing and (order.side != OrderSide.SELL.value or order.order_type != OrderType.MARKET.value):
         raise ValueError("risk_reducing is reserved for protective market sells")
     if order.status not in {OrderStatus.NEW.value, OrderStatus.REJECTED.value}:
         raise ValueError(f"order {order.id} is not submittable from {order.status}")
@@ -127,7 +125,7 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
     except Exception:
         raise
     if existing:
-        _apply_exchange_state(order, existing, allow_rejected_retry=order.status == OrderStatus.REJECTED.value)
+        _apply_exchange_state(order, existing, allow_reject_retry=order.status == OrderStatus.REJECTED.value)
         record_fills(db, adapter, order)
         db.flush()
         return SubmitResult(order, existing)
@@ -135,24 +133,16 @@ def recover_or_submit(db: Session, adapter: BinanceSpot, order: SpotOrder, post_
     try:
         return submit_order(db, adapter, order, post_only, risk_reducing=risk_reducing)
     except Exception:
-        # Another worker may have submitted this same durable intent after our
-        # first lookup, or the exchange may have accepted our request before a
-        # timeout/connection loss. Re-check the stable client ID before exposing
-        # the submit error to callers; never issue a second blind submission.
         try:
             existing = adapter.fetch_order_by_client_id(order.symbol, order.client_order_id)
         except Exception:
-            # The original submission result remains authoritative for the
-            # caller. A future reconcile/restart can safely retry the lookup.
             existing = None
-
         if not existing:
             raise
-
         _apply_exchange_state(
             order,
             existing,
-            allow_rejected_retry=order.status == OrderStatus.REJECTED.value,
+            allow_reject_retry=order.status == OrderStatus.REJECTED.value,
         )
         record_fills(db, adapter, order)
         db.flush()
@@ -163,9 +153,6 @@ def _map_status(status: str | None) -> str:
 
 def reconcile_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrder:
     if order.status not in ACTIVE:
-        # Terminal orders can still have trades that become visible after the
-        # cancel/fill response. The caller selects only candidates with a
-        # reported fill amount not yet represented by persisted fills.
         if order.status in {
             OrderStatus.FILLED.value,
             OrderStatus.CANCELED.value,
@@ -198,12 +185,7 @@ def cancel_order(db: Session, adapter: BinanceSpot, order: SpotOrder) -> SpotOrd
 
 def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
     count = 0
-
-    # Trade discovery may be unavailable for a local order without an exchange ID.
-    # Still process previously persisted, unapplied fills below.
     if order.exchange_order_id:
-        # Prefer an exchange-order-scoped query so a delayed fill cannot fall
-        # out of the account's latest 100 trades before the next reconciliation.
         fetch_for_order = getattr(type(adapter), "trades_for_order", None)
         trades = (
             fetch_for_order(adapter, order.symbol, order.exchange_order_id)
@@ -221,12 +203,10 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
             trade_id = str(trade.get("id")) if trade.get("id") is not None else None
             if not trade_id or trade_id in existing:
                 continue
-
             amount = D(str(trade.get("amount") or "0"))
             price = D(str(trade.get("price") or "0"))
             if amount <= 0 or price <= 0:
                 continue
-
             fee = trade.get("fee") or {}
             fill = SpotFill(
                 order_id=order.id,
@@ -250,37 +230,20 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
             except IntegrityError:
                 existing.add(trade_id)
                 continue
-
             existing.add(trade_id)
             count += 1
 
     db.flush()
-
     quote = order.symbol.split("/")[1]
-    order_fills = db.scalars(
-        select(SpotFill).where(SpotFill.order_id == order.id)
-    ).all()
+    order_fills = db.scalars(select(SpotFill).where(SpotFill.order_id == order.id)).all()
     if order_fills:
-        quote_fee = sum(
-            (
-                D(str(fill.fee)).quantize(FEE_SCALE)
-                for fill in order_fills
-                if fill.fee_currency.upper() == quote.upper()
-            ),
-            D("0"),
-        )
+        quote_fee = sum((D(str(fill.fee)).quantize(FEE_SCALE) for fill in order_fills if fill.fee_currency.upper() == quote.upper()), D("0"))
         order.fee_quote = quote_fee.quantize(FEE_SCALE)
 
-    # Recover any unapplied fill for this environment/pair, not only newly
-    # discovered fills. apply_fill is idempotent and shares the caller's
-    # transaction, so fill persistence and accounting commit or roll back together.
     pending_fills = db.scalars(
         select(SpotFill)
         .join(SpotOrder, SpotOrder.id == SpotFill.order_id)
-        .outerjoin(
-            InventoryApplication,
-            InventoryApplication.fill_id == SpotFill.id,
-        )
+        .outerjoin(InventoryApplication, InventoryApplication.fill_id == SpotFill.id)
         .where(
             SpotOrder.environment == order.environment,
             SpotFill.symbol == order.symbol,
@@ -293,8 +256,6 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
         fee_currency = (fill.fee_currency or "").upper()
         base, quote_asset = (part.upper() for part in fill.symbol.split("/", 1))
         if D(str(fill.fee or "0")) > 0 and fee_currency not in {base, quote_asset} and fill.fee_quote_value is None:
-            # Value from public market trades at/before the exchange fill timestamp.
-            # Never substitute a current ticker for historical accounting.
             timestamp = fill.timestamp
             if timestamp.tzinfo is None:
                 timestamp = timestamp.replace(tzinfo=UTC)
@@ -315,10 +276,7 @@ def record_fills(db: Session, adapter: BinanceSpot, order: SpotOrder) -> int:
                     except Exception:
                         fee_quote_price = None
             if fee_quote_price is None or not D(str(fee_quote_price)).is_finite() or D(str(fee_quote_price)) <= 0:
-                raise RuntimeError(
-                    f"cannot value third-asset fee {fee_currency} in {quote_asset} "
-                    f"from historical trades near {timestamp.isoformat()}"
-                )
+                raise RuntimeError(f"cannot value third-asset fee {fee_currency} in {quote_asset} from historical trades near {timestamp.isoformat()}")
             fill.fee_quote_value = D(str(fill.fee)) * D(str(fee_quote_price))
             db.flush()
         apply_fill(db, fill)
