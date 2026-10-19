@@ -1,8 +1,8 @@
 from decimal import Decimal
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from spot_bot.models import Base, Environment, OrderRequest, OrderSide, OrderStatus, OrderType, SpotOrder, SpotProtection
+from spot_bot.models import Base, OrderSide, OrderStatus, OrderType, SpotOrder, SpotProtection
 import spot_bot.spot_protection_monitor as monitor
 
 
