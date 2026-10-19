@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from .db import SessionLocal
 from .exchange import BinanceSpot
 from .models import Environment, OrderRequest, OrderSide, OrderStatus, OrderType, SpotOrder, SpotProtection
-from .order_service import create_intent, recover_or_submit, reconcile_order, record_fills
+from .order_service import cancel_order, create_intent, recover_or_submit, reconcile_order, record_fills
 
 log = logging.getLogger(__name__)
 D = Decimal
@@ -35,25 +35,32 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                     db.commit()
                     continue
 
+                if protection.status in {"waiting_entry", "armed"} and entry.status in ACTIVE:
+                    reconcile_order(db, adapter, entry)
+                    record_fills(db, adapter, entry)
+                    db.commit()
+                    db.refresh(entry)
+                    db.refresh(protection)
+
+                qty = D(str(entry.filled_amount or "0"))
                 if protection.status == "waiting_entry":
-                    if entry.status in ACTIVE:
-                        reconcile_order(db, adapter, entry)
-                        record_fills(db, adapter, entry)
+                    if qty > 0:
+                        protection.protected_quantity = qty
+                        protection.status = "armed"
+                        protection.last_error = None
                         db.commit()
-                    if entry.status not in (TERMINAL | {OrderStatus.REJECTED.value}):
-                        continue
-                    qty = D(str(entry.filled_amount or "0"))
-                    if qty <= 0:
+                    elif entry.status in (TERMINAL | {OrderStatus.REJECTED.value}):
                         protection.status = "closed"
                         protection.last_error = "Entry ended without a fill; no position to protect"
                         db.commit()
                         continue
-                    protection.protected_quantity = qty
-                    protection.status = "armed"
-                    protection.last_error = None
-                    db.commit()
+                    else:
+                        # A resting entry has no filled position to protect yet.
+                        continue
 
                 if protection.status == "armed":
+                    # Keep protected quantity aligned with any new partial fills.
+                    protection.protected_quantity = qty
                     ticker = adapter.ticker(protection.symbol)
                     raw = ticker.get("last") or ticker.get("close")
                     price = D(str(raw or "0"))
@@ -65,7 +72,21 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                         reason = "stop_loss"
                     elif protection.take_profit_price is not None and price >= D(str(protection.take_profit_price)):
                         reason = "take_profit"
-                    if reason is None:
+                    if reason is None or qty <= 0:
+                        db.commit()
+                        continue
+
+                    # If a limit entry partially filled, cancel its remainder before sizing the exit.
+                    if entry.status in ACTIVE:
+                        cancel_order(db, adapter, entry)
+                        record_fills(db, adapter, entry)
+                        db.commit()
+                        db.refresh(entry)
+                        qty = D(str(entry.filled_amount or "0"))
+                        protection.protected_quantity = qty
+                    if qty <= 0:
+                        protection.status = "closed"
+                        protection.last_error = "Entry remainder canceled before any fill; no exit needed"
                         db.commit()
                         continue
 
@@ -73,15 +94,15 @@ def monitor_spot_protections_once(session_factory=SessionLocal, adapter_factory=
                     result = db.execute(
                         update(SpotProtection)
                         .where(SpotProtection.id == protection.id, SpotProtection.status == "armed")
-                        .values(status="exiting", trigger_reason=reason, last_error=None)
+                        .values(status="exiting", trigger_reason=reason, last_error=None,
+                                protected_quantity=qty, last_price=price)
                     )
                     if result.rowcount != 1:
                         db.rollback()
                         continue
                     protection.status = "exiting"
                     exit_order = create_intent(db, OrderRequest(
-                        env, protection.symbol, OrderSide.SELL, OrderType.MARKET,
-                        protection.protected_quantity,
+                        env, protection.symbol, OrderSide.SELL, OrderType.MARKET, qty,
                     ), risk_reducing=True)
                     protection.exit_order_id = exit_order.id
                     db.commit()
