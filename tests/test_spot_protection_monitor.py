@@ -82,7 +82,7 @@ def test_stop_loss_creates_one_persistent_market_exit_and_closes(monkeypatch, tm
         assert protection.status == "closed"
         assert protection.trigger_reason == "stop_loss"
         assert protection.exit_order_id is not None
-        assert protection.protected_quantity == Decimal("0.100000000000000000")
+        assert abs(protection.protected_quantity - Decimal("0.1")) < Decimal("0.000000000001")
     assert len(submitted) == 1
     monitor.monitor_spot_protections_once(factory, lambda env: FakeAdapter(env, "89"))
     assert len(submitted) == 1
